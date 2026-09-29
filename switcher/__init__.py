@@ -1,3 +1,3 @@
 """Switcher — a self-learning RU/EN keyboard layout switcher with Claude inside."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

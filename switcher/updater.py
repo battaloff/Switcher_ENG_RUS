@@ -124,9 +124,11 @@ def parse_releases(data: list[dict]) -> list[Release]:
     return sorted(found.values(), key=lambda r: r.key, reverse=True)
 
 
-def _request(url: str, accept: str) -> urllib.request.Request:
-    return urllib.request.Request(url, headers={"Accept": accept, "User-Agent": USER_AGENT,
-                                                "X-GitHub-Api-Version": "2022-11-28"})
+def _request(url: str, accept: str, token: str = "") -> urllib.request.Request:
+    headers = {"Accept": accept, "User-Agent": USER_AGENT, "X-GitHub-Api-Version": "2022-11-28"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return urllib.request.Request(url, headers=headers)
 
 
 def fetch_releases(timeout: float = 15.0) -> list[Release]:
@@ -135,7 +137,9 @@ def fetch_releases(timeout: float = 15.0) -> list[Release]:
         raise UpdateError("проверка обновлений отключена")
     url = f"https://api.github.com/repos/{name}/releases?per_page=50"
     try:
-        with urllib.request.urlopen(_request(url, "application/vnd.github+json"), timeout=timeout) as response:
+        # CI sets a token to avoid the shared rate limit; downloads never carry it (redirects keep headers)
+        token = os.environ.get("SWITCHER_GITHUB_TOKEN", "")
+        with urllib.request.urlopen(_request(url, "application/vnd.github+json", token), timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
         if exc.code in (403, 429):

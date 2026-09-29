@@ -639,7 +639,7 @@ class SettingsWindow(ctk.CTkToplevel):
         stamp = float(self.app.profile.get_meta("update_checked_at", "0") or 0)
         if not stamp:
             return "Ещё не проверялось"
-        return "Последняя проверка: " + time.strftime("%d.%m в %H:%M", time.localtime(stamp))
+        return "Проверено " + time.strftime("%d.%m в %H:%M", time.localtime(stamp))
 
     def _releases_arrived(self, releases) -> None:
         """From the background check (any thread)."""
@@ -672,20 +672,24 @@ class SettingsWindow(ctk.CTkToplevel):
     def _clear_releases(self) -> None:
         for child in self.release_box.winfo_children():
             child.destroy()
+        self._separators = [line for line in self._separators if line.winfo_exists()]
         self.release_box._rows = 0
         self.release_buttons = []
 
     def show_releases(self, releases) -> None:
         self._releases_shown = True
         self.check_button.configure(state="normal")
-        self.update_status.configure(text=self._last_check_text())
+        newer = any(r.relation == "newer" and not r.prerelease for r in releases)
+        checked = self._last_check_text()
+        if releases and not newer:
+            checked = f"У вас последняя версия ✓ · {checked[0].lower()}{checked[1:]}"
+        self.update_status.configure(text=checked)
         self._clear_releases()
         if not releases:
             ctk.CTkLabel(self.release_box, text="На GitHub пока нет ни одной версии.", font=self.fonts["body"],
                          text_color=MUTED, anchor="w").pack(fill="x", padx=16, pady=14)
         for release in releases:
             self._release_row(release)
-        newer = any(r.relation == "newer" and not r.prerelease for r in releases)
         self.nav["updates"][1].configure(text="Обновления  ●" if newer else "Обновления")
 
     def _release_row(self, release) -> None:
@@ -725,6 +729,11 @@ class SettingsWindow(ctk.CTkToplevel):
         notes = release.notes or ["Без описания"]
         ctk.CTkLabel(text, text="\n".join(f"•  {note}" for note in notes), font=self.fonts["small"],
                      text_color=MUTED, anchor="w", justify="left", wraplength=440).pack(fill="x", pady=(4, 0))
+        if release.url:
+            link = ctk.CTkLabel(text, text="Подробнее на GitHub →", font=self.fonts["small"], text_color=ACCENT,
+                                cursor="hand2", anchor="w", height=18)
+            link.pack(anchor="w", pady=(4, 0))
+            link.bind("<Button-1>", lambda _e, url=release.url: webbrowser.open(url))
 
     def choose_release(self, release) -> None:
         if not updater.can_install():

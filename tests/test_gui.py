@@ -244,3 +244,18 @@ def test_auto_update_setting_is_saved(window):
     window.var_auto_update.set(False)
     window.save()
     assert window.app.saved[-1].updates.check_automatically is False
+
+
+def test_latest_version_is_said_plainly(window):
+    window.show_releases([fake_release("0.2.0", "current"), fake_release("0.1.9", "older")])
+    assert window.update_status.cget("text").startswith("У вас последняя версия ✓")
+    assert "Подробнее на GitHub →" in [w.cget("text") for w in _labels(window.release_box)]
+    window.show_releases([fake_release("0.3.0", "newer"), fake_release("0.2.0", "current")])
+    assert not window.update_status.cget("text").startswith("У вас последняя версия")
+
+
+def test_version_list_can_be_refreshed(window):
+    releases = [fake_release("0.3.0", "newer"), fake_release("0.2.0", "current"), fake_release("0.1.9", "older")]
+    window.show_releases(releases)
+    window.show_releases(releases)  # "Проверить" again: the list is rebuilt, not broken halfway
+    assert [b.cget("text") for b in window.release_buttons] == ["Обновить", "Откатить"]

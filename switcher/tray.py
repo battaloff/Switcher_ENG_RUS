@@ -103,7 +103,10 @@ class Tray:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", quit_),
         )
-        self.icon = pystray.Icon("switcher", icon_image(), "Switcher — умный переключатель раскладки", menu)
+        from . import __version__
+
+        self.icon = pystray.Icon("switcher", icon_image(), f"Switcher {__version__} — умный переключатель раскладки",
+                                 menu)
         app.release_listeners.append(lambda releases: self.icon.update_menu())
         app.backend.notifier = lambda message: self.icon.notify(message, "Switcher")
         threading.Thread(target=self.icon.run, name="switcher-tray", daemon=True).start()
