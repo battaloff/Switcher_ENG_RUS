@@ -1,10 +1,17 @@
-"""Start the switcher at login: ``switcher autostart on|off``."""
+"""Start the switcher at login.
+
+Windows uses the ``HKCU\\...\\Run`` registry value — the same one the installer
+writes, so the checkbox in the settings and the installer option agree.
+"""
 
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
+
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+VALUE = "Switcher"
 
 
 def _python(windowless: bool = False) -> str:
@@ -16,22 +23,41 @@ def _python(windowless: bool = False) -> str:
     return str(exe)
 
 
+def command() -> str:
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+    return f'"{_python(windowless=True)}" -m switcher run'
+
+
 def entry_path() -> Path:
-    if sys.platform == "win32":
-        startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-        return startup / "Switcher.vbs"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "LaunchAgents" / "com.switcher.agent.plist"
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / "switcher.desktop"
 
 
-def enable() -> Path:
+def is_enabled() -> bool:
+    if sys.platform == "win32":
+        import winreg
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+                winreg.QueryValueEx(key, VALUE)
+            return True
+        except OSError:
+            return False
+    return entry_path().exists()
+
+
+def enable() -> str:
+    if sys.platform == "win32":
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            winreg.SetValueEx(key, VALUE, 0, winreg.REG_SZ, command())
+        return f"HKCU\\{RUN_KEY}\\{VALUE}"
     path = entry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "win32":
-        command = f'""{_python(windowless=True)}"" -m switcher run'
-        path.write_text(f'CreateObject("WScript.Shell").Run "{command}", 0, False\r\n', encoding="utf-8")
-    elif sys.platform == "darwin":
+    if sys.platform == "darwin":
         path.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -51,10 +77,19 @@ Comment=Умный переключатель раскладки RU/EN
 Exec={_python()} -m switcher run
 X-GNOME-Autostart-enabled=true
 """, encoding="utf-8")
-    return path
+    return str(path)
 
 
 def disable() -> bool:
+    if sys.platform == "win32":
+        import winreg
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, VALUE)
+            return True
+        except OSError:
+            return False
     path = entry_path()
     if path.exists():
         path.unlink()
