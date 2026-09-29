@@ -47,7 +47,7 @@ jobs:
           if-no-files-found: error
 
       - name: Settings window screenshots
-        run: python tools/gui_screenshots.py screenshots
+        run: python tools/gui_screenshots.py screenshots --preview
 
       - uses: actions/upload-artifact@v4
         with:

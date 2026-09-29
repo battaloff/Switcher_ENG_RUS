@@ -1,6 +1,9 @@
 """Screenshots of every settings page, light and dark (for reviewing the design, e.g. on CI).
 
-    python tools/gui_screenshots.py OUT_DIR
+    python tools/gui_screenshots.py OUT_DIR [--preview]
+
+--preview also prints a small JPEG contact sheet as base64, for reviewers who can
+read the CI log but cannot download artifacts.
 """
 
 from __future__ import annotations
@@ -67,17 +70,40 @@ def shoot(mode: str, out: Path) -> None:
     root.mainloop()
 
 
+def preview(out: Path, names: list[str]) -> None:
+    import base64
+    import io
+
+    from PIL import Image
+
+    images = [Image.open(out / f"{name}.png").convert("RGB") for name in names]
+    width, height = max(i.width for i in images), max(i.height for i in images)
+    sheet = Image.new("RGB", (width * 2, height * ((len(images) + 1) // 2)), "white")
+    for n, image in enumerate(images):
+        sheet.paste(image, ((n % 2) * width, (n // 2) * height))
+    sheet.thumbnail((1200, 1000))
+    buf = io.BytesIO()
+    sheet.save(buf, "JPEG", quality=60)
+    data = base64.b64encode(buf.getvalue()).decode()
+    print("-----BEGIN PREVIEW JPEG-----")
+    print("\n".join(data[i:i + 1000] for i in range(0, len(data), 1000)))
+    print("-----END PREVIEW JPEG-----")
+
+
 def main() -> None:
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else "screenshots").resolve()
+    args = [a for a in sys.argv[1:] if a != "--preview"]
+    out = Path(args[0] if args else "screenshots").resolve()
     out.mkdir(parents=True, exist_ok=True)
-    if len(sys.argv) > 2:  # child process: one appearance mode per interpreter
+    if len(args) > 1:  # child process: one appearance mode per interpreter
         sys.path.insert(0, str(ROOT))
-        shoot(sys.argv[2], out)
+        shoot(args[1], out)
         return
     env = dict(os.environ, SWITCHER_HOME=tempfile.mkdtemp())
     for mode in ("light", "dark"):
         subprocess.run([sys.executable, __file__, str(out), mode], env=env, check=True, timeout=120)
     print("\n".join(sorted(str(p) for p in out.glob("*.png"))))
+    if "--preview" in sys.argv:
+        preview(out, ["light-main", "dark-keys"])
 
 
 if __name__ == "__main__":

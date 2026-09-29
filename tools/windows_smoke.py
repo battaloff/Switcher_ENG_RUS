@@ -69,6 +69,17 @@ def find_window(pid: int, timeout: float = 20.0):
     return None
 
 
+def find_edit(hwnd, timeout: float = 20.0):
+    """Notepad's text field: it is created a moment after the window itself."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        edit = user32.FindWindowExW(hwnd, None, "Edit", None) or user32.FindWindowExW(hwnd, None, "RichEditD2DPT", None)
+        if edit:
+            return edit
+        time.sleep(0.3)
+    return None
+
+
 def bring_to_front(hwnd) -> bool:
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     if user32.SetForegroundWindow(hwnd) and user32.GetForegroundWindow() == hwnd:
@@ -93,8 +104,11 @@ def main() -> int:
     if not hwnd:
         print("FAIL: Notepad window not found")
         return 1
-    edit = user32.FindWindowExW(hwnd, None, "Edit", None) or user32.FindWindowExW(hwnd, None, "RichEditD2DPT", None)
+    edit = find_edit(hwnd)
     print(f"Notepad hwnd={hwnd} edit={edit} ({class_name(edit) if edit else '-'})")
+    if not edit:
+        print("FAIL: Notepad's text field not found")
+        return 1
     if not bring_to_front(hwnd):
         fg = user32.GetForegroundWindow()
         print(f"WARN: could not focus Notepad; foreground is {class_name(fg) if fg else None!r}")
