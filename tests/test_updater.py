@@ -55,29 +55,74 @@ def test_releases_are_parsed_newest_first(monkeypatch):
     assert releases[0].date == "2026-09-29"
 
 
-def test_checks_can_be_turned_off_and_errors_are_readable(monkeypatch):
+class Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def fake_github(monkeypatch, manifest=None, api=None, api_error=None):
+    """urlopen stand-in: the manifest on the download servers and the REST API."""
+    calls = []
+
+    def urlopen(request, timeout=None):
+        url = request.full_url
+        calls.append(url)
+        if url.endswith("/releases/latest/download/releases.json"):
+            if manifest is None:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO())
+            return Response(json.dumps(manifest).encode())
+        if api_error:
+            code, headers = api_error
+            raise urllib.error.HTTPError(url, code, "error", headers, io.BytesIO())
+        return Response(json.dumps(api or []).encode())
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", urlopen)
+    return calls
+
+
+def test_checks_can_be_turned_off(monkeypatch):
     monkeypatch.setenv("SWITCHER_UPDATE_REPO", "")
     with pytest.raises(updater.UpdateError, match="отключена"):
         updater.fetch_releases()
+
+
+def test_the_manifest_is_read_first_and_needs_no_api(monkeypatch):
     monkeypatch.setenv("SWITCHER_UPDATE_REPO", "o/r")
+    calls = fake_github(monkeypatch, manifest=updater.manifest([release_json("0.3.0"), release_json("0.2.0")]),
+                        api_error=(403, {"X-RateLimit-Remaining": "0"}))
+    assert [r.version for r in updater.fetch_releases()] == ["0.3.0", "0.2.0"]
+    assert calls == ["https://github.com/o/r/releases/latest/download/releases.json"]
 
-    def limited(*a, **k):
-        raise urllib.error.HTTPError("u", 403, "rate limited", {}, io.BytesIO())
 
-    monkeypatch.setattr(updater.urllib.request, "urlopen", limited)
-    with pytest.raises(updater.UpdateError, match="ограничил"):
+def test_without_a_manifest_the_api_is_asked(monkeypatch):
+    monkeypatch.setenv("SWITCHER_UPDATE_REPO", "o/r")
+    calls = fake_github(monkeypatch, api=[release_json("9.9.9")])
+    assert [r.version for r in updater.fetch_releases()] == ["9.9.9"]
+    assert calls[-1].startswith("https://api.github.com/repos/o/r/releases")
+
+
+def test_api_errors_say_what_happened(monkeypatch):
+    monkeypatch.setenv("SWITCHER_UPDATE_REPO", "o/r")
+    fake_github(monkeypatch, api_error=(403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1790690000"}))
+    with pytest.raises(updater.UpdateError, match="ограничил число запросов с вашего адреса.*после"):
+        updater.fetch_releases()
+    fake_github(monkeypatch, api_error=(403, {"X-RateLimit-Remaining": "12"}))
+    with pytest.raises(updater.UpdateError, match="ошибкой 403"):
         updater.fetch_releases()
 
-    class Response(io.BytesIO):
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(updater.urllib.request, "urlopen",
-                        lambda *a, **k: Response(json.dumps([release_json("9.9.9")]).encode()))
-    assert [r.version for r in updater.fetch_releases()] == ["9.9.9"]
+def test_manifest_keeps_only_what_the_app_reads():
+    data = [release_json("0.2.1", digest="sha256:ab"), release_json("0.3.0", draft=True),
+            {"tag_name": "v0.1.0", "assets": [{"name": "notes.txt"}]}]
+    data[0]["author"] = {"login": "someone"}
+    result = updater.manifest(data)
+    assert result["schema"] == 1 and [r["tag_name"] for r in result["releases"]] == ["v0.2.1"]
+    assert "author" not in result["releases"][0]
+    assert result["releases"][0]["assets"][0]["digest"] == "sha256:ab"
+    assert updater.parse_releases(result["releases"])[0].sha256 == "ab"
 
 
 @pytest.fixture

@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -131,19 +132,54 @@ def _request(url: str, accept: str, token: str = "") -> urllib.request.Request:
     return urllib.request.Request(url, headers=headers)
 
 
+MANIFEST = "releases.json"  # attached to every release by CI: the whole version list, API-shaped
+
+
 def fetch_releases(timeout: float = 15.0) -> list[Release]:
+    """All published versions, newest first.
+
+    First from the manifest on GitHub's download servers, which has no request
+    quota; the REST API allows only 60 requests an hour per address, and behind
+    a VPN or a shared connection other people use them up.
+    """
     name = repo()
     if not name:
         raise UpdateError("проверка обновлений отключена")
-    url = f"https://api.github.com/repos/{name}/releases?per_page=50"
     try:
-        # CI sets a token to avoid the shared rate limit; downloads never carry it (redirects keep headers)
-        token = os.environ.get("SWITCHER_GITHUB_TOKEN", "")
+        return _fetch_manifest(name, timeout)
+    except UpdateError as exc:
+        log.info("no release manifest (%s), asking the API", exc)
+    return _fetch_api(name, timeout)
+
+
+def _fetch_manifest(name: str, timeout: float) -> list[Release]:
+    url = f"https://github.com/{name}/releases/latest/download/{MANIFEST}"
+    try:
+        with urllib.request.urlopen(_request(url, "application/octet-stream"), timeout=timeout) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise UpdateError(f"HTTP {exc.code}") from None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise UpdateError(str(getattr(exc, "reason", exc))) from None
+    if not isinstance(data, dict) or not isinstance(data.get("releases"), list):
+        raise UpdateError("unexpected manifest")
+    return parse_releases(data["releases"])
+
+
+def _fetch_api(name: str, timeout: float) -> list[Release]:
+    url = f"https://api.github.com/repos/{name}/releases?per_page=50"
+    # CI sets a token to avoid the shared quota; downloads never carry it (redirects keep headers)
+    token = os.environ.get("SWITCHER_GITHUB_TOKEN", "")
+    try:
         with urllib.request.urlopen(_request(url, "application/vnd.github+json", token), timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
-        if exc.code in (403, 429):
-            raise UpdateError("GitHub временно ограничил запросы — попробуйте через час") from None
+        headers = exc.headers or {}
+        if exc.code == 429 or (exc.code == 403 and headers.get("X-RateLimit-Remaining") == "0"):
+            reset = headers.get("X-RateLimit-Reset") or ""
+            when = f"после {time.strftime('%H:%M', time.localtime(int(reset)))}" if reset.isdigit() else "позже"
+            raise UpdateError("GitHub ограничил число запросов с вашего адреса (так бывает с VPN или общим "
+                              f"интернетом) — попробуйте {when}") from None
         if exc.code == 404:
             raise UpdateError("список версий не найден на GitHub") from None
         raise UpdateError(f"GitHub ответил ошибкой {exc.code}") from None
@@ -151,6 +187,21 @@ def fetch_releases(timeout: float = 15.0) -> list[Release]:
         reason = getattr(exc, "reason", exc)
         raise UpdateError(f"нет связи с GitHub ({reason})") from None
     return parse_releases(data)
+
+
+def manifest(releases: list[dict]) -> dict:
+    """The manifest CI attaches to a release: the API's release list, trimmed to what the app reads."""
+    keep = ("tag_name", "name", "body", "draft", "prerelease", "published_at", "html_url")
+    items = []
+    for item in releases:
+        if item.get("draft"):
+            continue
+        entry = {key: item.get(key) for key in keep}
+        entry["assets"] = [{key: asset.get(key) for key in ("name", "size", "browser_download_url", "digest")}
+                           for asset in item.get("assets") or [] if ASSET_RE.match(asset.get("name") or "")]
+        if entry["assets"]:
+            items.append(entry)
+    return {"schema": 1, "releases": items}
 
 
 def downloads_dir() -> Path:

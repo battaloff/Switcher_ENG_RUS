@@ -59,6 +59,17 @@ jobs:
       - name: Build installer
         run: python packaging/windows/build.py
 
+      - name: Version list for the app (releases.json)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(python -c 'import switcher; print(switcher.__version__)')"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > published.json
+          python tools/release_notes.py "$version" > manifest-notes.md
+          python tools/release_manifest.py "$version" "dist/SwitcherSetup-$version.exe" manifest-notes.md \
+            published.json "$GITHUB_REPOSITORY" > dist/releases.json
+
       - name: Install, start and uninstall
         shell: pwsh
         run: ./packaging/windows/check_install.ps1
@@ -96,7 +107,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
-          gh release create "$RELEASE_TAG" dist/SwitcherSetup-*.exe
+          gh release create "$RELEASE_TAG" dist/SwitcherSetup-*.exe dist/releases.json
           --target "$GITHUB_SHA"
           --title "Switcher $RELEASE_VERSION"
           --notes-file release-notes.md
