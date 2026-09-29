@@ -5,6 +5,11 @@ on:
     branches: ["**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Опубликовать выпуск с версией из switcher/__init__.py и описанием из CHANGELOG.md"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,13 +36,20 @@ jobs:
         run: python -m pytest -q
 
       - name: Release version and notes
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version="$(python -c 'import switcher; print(switcher.__version__)')"
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match switcher.__version__ $version"; exit 1
           fi
+          if [ "$GITHUB_REF_TYPE" != "tag" ] && gh release view "v$version" >/dev/null 2>&1; then
+            echo "::error::v$version is already released: raise __version__ and add a CHANGELOG.md section"; exit 1
+          fi
+          echo "RELEASE_TAG=v$version" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           python tools/release_notes.py "$version" > release-notes.md
           cat release-notes.md
 
@@ -77,11 +89,12 @@ jobs:
           python tools/windows_smoke.py
 
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
-          gh release create "$GITHUB_REF_NAME" dist/SwitcherSetup-*.exe
-          --title "Switcher ${GITHUB_REF_NAME#v}"
+          gh release create "$RELEASE_TAG" dist/SwitcherSetup-*.exe
+          --target "$GITHUB_SHA"
+          --title "Switcher $RELEASE_VERSION"
           --notes-file release-notes.md
