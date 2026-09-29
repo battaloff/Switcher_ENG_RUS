@@ -1,0 +1,66 @@
+name: Windows installer
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[tray,dev]" pyinstaller
+
+      - name: Unit tests
+        run: python -m pytest -q
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        run: python packaging/windows/build.py
+
+      - name: Install, start and uninstall
+        shell: pwsh
+        run: ./packaging/windows/check_install.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SwitcherSetup
+          path: dist/SwitcherSetup-*.exe
+          if-no-files-found: error
+
+      - name: Typing into Notepad (end-to-end)
+        shell: pwsh
+        run: |
+          $languages = Get-WinUserLanguageList
+          $languages.Add("ru-RU")
+          Set-WinUserLanguageList $languages -Force
+          python tools/windows_smoke.py
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/SwitcherSetup-*.exe
+          --title "Switcher $GITHUB_REF_NAME"
+          --notes-file packaging/windows/RELEASE_NOTES.md
+          --prerelease

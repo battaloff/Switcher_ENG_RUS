@@ -1,0 +1,199 @@
+"""End-to-end check of the Windows backend in Notepad.
+
+    python tools/windows_smoke.py
+
+Types into Notepad the way a user does (physical keys, the active layout
+decides the letters) while the real App runs: hooks, WinAPI layout switching,
+text injection.  Then reads Notepad's text back and compares.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from ctypes import wintypes
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+os.environ["SWITCHER_ACCEPT_INJECTED"] = "1"  # our synthetic "user" input is flagged as injected
+os.environ.setdefault("SWITCHER_HOME", tempfile.mkdtemp(prefix="switcher-winsmoke-"))
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+user32.FindWindowExW.argtypes = (wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR)
+user32.FindWindowExW.restype = wintypes.HWND
+user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_void_p)
+user32.SendMessageW.restype = ctypes.c_ssize_t
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+user32.BringWindowToTop.argtypes = (wintypes.HWND,)
+user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
+user32.LoadKeyboardLayoutW.argtypes = (wintypes.LPCWSTR, wintypes.UINT)
+user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
+WM_SETTEXT, WM_GETTEXT = 0x000C, 0x000D
+
+
+def class_name(hwnd) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def find_window(pid: int, timeout: float = 20.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        found = []
+
+        def callback(hwnd, _):
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and class_name(hwnd) == "Notepad":
+                found.append(hwnd)
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(callback), 0)
+        if found:
+            return found[0]
+        time.sleep(0.3)
+    return None
+
+
+def bring_to_front(hwnd) -> bool:
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    if user32.SetForegroundWindow(hwnd) and user32.GetForegroundWindow() == hwnd:
+        return True
+    foreground = user32.GetForegroundWindow()
+    theirs = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+    ours = kernel32.GetCurrentThreadId()
+    if theirs:
+        user32.AttachThreadInput(ours, theirs, True)
+    user32.BringWindowToTop(hwnd)
+    user32.SetForegroundWindow(hwnd)
+    if theirs:
+        user32.AttachThreadInput(ours, theirs, False)
+    return user32.GetForegroundWindow() == hwnd
+
+
+def main() -> int:
+    for klid in ("00000409", "00000419"):  # make sure both layouts are loaded
+        user32.LoadKeyboardLayoutW(klid, 0)
+    notepad = subprocess.Popen(["notepad.exe"])
+    hwnd = find_window(notepad.pid)
+    if not hwnd:
+        print("FAIL: Notepad window not found")
+        return 1
+    edit = user32.FindWindowExW(hwnd, None, "Edit", None) or user32.FindWindowExW(hwnd, None, "RichEditD2DPT", None)
+    print(f"Notepad hwnd={hwnd} edit={edit} ({class_name(edit) if edit else '-'})")
+    if not bring_to_front(hwnd):
+        fg = user32.GetForegroundWindow()
+        print(f"WARN: could not focus Notepad; foreground is {class_name(fg) if fg else None!r}")
+
+    from pynput.keyboard import Controller, Key, KeyCode
+
+    from switcher.app import App
+    from switcher.config import Config
+    from switcher.layouts import EN, RU
+    from switcher.platform.windows import _VK
+
+    config = Config()
+    config.ai.enabled = False
+    app = App(config)
+    runner = threading.Thread(target=app.run, kwargs={"tray": False}, daemon=True)
+    runner.start()
+    time.sleep(2.0)
+    user = Controller()
+    vk_of = {code: vk for vk, code in _VK.items()}
+    print("installed layouts:", sorted(app.backend._hkls))
+
+    def screen() -> str:
+        buf = ctypes.create_unicode_buffer(8192)
+        user32.SendMessageW(edit, WM_GETTEXT, 8192, ctypes.addressof(buf))
+        return buf.value
+
+    def clear() -> None:
+        empty = ctypes.create_unicode_buffer("")
+        user32.SendMessageW(edit, WM_SETTEXT, 0, ctypes.addressof(empty))
+        app.post(lambda: app.controller.reset("test"))
+        time.sleep(0.3)
+
+    def tap(key) -> None:
+        user.press(key)
+        user.release(key)
+
+    def type_keys(physical: str) -> None:
+        for ch in physical:
+            if ch == " ":
+                tap(Key.space)
+            elif ch == "\b":
+                tap(Key.backspace)
+            else:
+                tap(KeyCode.from_vk(vk_of[ch]))
+            time.sleep(0.12)
+        time.sleep(1.2)
+
+    def layout(lang: str) -> None:
+        app.backend.set_layout(lang)
+        time.sleep(0.6)
+        print(f"   layout requested {lang}, Notepad now {app.backend.current_layout()}")
+
+    results = []
+
+    def check(label: str, expected: str) -> None:
+        got = screen()
+        ok = got == expected
+        results.append(ok)
+        print(f"{'OK  ' if ok else 'FAIL'} {label}: {got!r} (expected {expected!r}); "
+              f"layout {app.backend.current_layout()}, app {app.backend.active_app()!r}")
+        if not ok:
+            c = app.controller
+            print("     tracked:", [(t.text, t.lang, t.change) for t in c.history],
+                  "cur:", c.cur.typed_text if c.cur else None)
+
+    layout(EN)
+    type_keys("ghbdtn ")
+    check("Russian word typed on the English layout", "привет ")
+    type_keys("rfr ltkf ")
+    check("the rest is typed in Russian already", "привет как дела ")
+
+    clear()
+    layout(RU)
+    type_keys("hello ")
+    check("English word typed on the Russian layout", "hello ")
+
+    clear()
+    layout(EN)
+    type_keys("e vtyz ")
+    check("short word fixed together with the next one", "у меня ")
+
+    clear()
+    layout(EN)
+    type_keys("ghbdtn ")
+    for _ in range(2):
+        tap(Key.shift)
+        time.sleep(0.06)
+    time.sleep(1.2)
+    check("double Shift undoes the switch", "ghbdtn ")
+    rule = app.profile.layout_rule("ghbdtn", app.backend.active_app())
+    print(f"{'OK  ' if rule else 'FAIL'} rule learned from the undo: {rule}")
+    results.append(bool(rule))
+
+    app.stop_event.set()
+    runner.join(timeout=5)
+    notepad.kill()
+    print("PASSED" if all(results) else "FAILED")
+    return 0 if all(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
