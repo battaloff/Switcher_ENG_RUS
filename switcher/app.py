@@ -10,12 +10,12 @@ import time
 
 from .ai import Assistant, ReviewOutcome, apply_review
 from .config import Config
-from .controller import Controller
+from .controller import Controller, parse_hotkey
 from .engine import Engine
 from .langmodel import load_models
 from .layouts import Keyboard
 from .learner import Learner
-from .paths import profile_path
+from .paths import config_path, profile_path
 from .profile import Profile
 
 log = logging.getLogger(__name__)
@@ -79,18 +79,40 @@ class App:
                 self.profile.flush()
                 last_flush = time.monotonic()
 
+    # -- settings --------------------------------------------------------------
+
+    def update_config(self, new: Config, save: bool = True) -> None:
+        """Apply settings edited in the window; takes effect immediately."""
+        if save:
+            new.save(config_path())
+        self.post(lambda: self._apply_config(new))
+
+    def _apply_config(self, new: Config) -> None:
+        self.config.__dict__.update(new.__dict__)
+        config = self.config
+        self.engine.tuning.threshold = config.threshold
+        self.learner.config = config.learning
+        self.profile.min_vocab_count = config.learning.min_vocab_count
+        self.controller.enabled = config.enabled
+        self.controller.hotkeys = {name: parse_hotkey(spec) for name, spec in vars(config.hotkeys).items() if spec}
+        self.assistant = make_assistant(config)
+        self.controller.ai = self.assistant
+
     # -- AI review -----------------------------------------------------------
+
+    def ai_ready(self) -> bool:
+        return self.assistant is not None and self.assistant.has_credentials()
 
     def _on_feedback(self) -> None:
         self._feedback += 1
         every = self.config.ai.review_every
-        if self.assistant and every and self._feedback >= every and not self._reviewing.locked():
+        if self.ai_ready() and every and self._feedback >= every and not self._reviewing.locked():
             self._feedback = 0
             threading.Thread(target=self.review_and_notify, daemon=True).start()
 
     def review(self) -> tuple[dict, dict, ReviewOutcome]:
         if self.assistant is None:
-            raise RuntimeError("ИИ выключен или не установлен пакет anthropic")
+            raise RuntimeError("Claude выключен в настройках")
         with self._reviewing:
             self.profile.flush()
             digest, proposal = self.assistant.review(self.profile, self.keyboard)
@@ -103,13 +125,43 @@ class App:
             self.backend.notify(f"Claude изучил ваши исправления: {outcome.summary()}")
         except Exception as exc:
             log.warning("AI review failed: %s", exc)
+            self.backend.notify(f"Claude не смог разобрать исправления: {exc}")
 
     # -- lifecycle -----------------------------------------------------------
 
-    def run(self, tray: bool = True) -> None:
+    def start(self) -> threading.Thread:
         self.backend.start(self.submit)
         worker = threading.Thread(target=self._worker, name="switcher-engine", daemon=True)
         worker.start()
+        return worker
+
+    def shutdown(self, worker: threading.Thread) -> None:
+        self.stop_event.set()
+        self.backend.stop()
+        worker.join(timeout=2)
+        self.profile.close()
+
+    def run_gui(self) -> None:
+        """Windows desktop mode: settings window (Tk) on the main thread, tray icon beside it."""
+        from .gui import Ui
+        from .tray import Tray
+
+        worker = self.start()
+        ui = Ui(self)
+        tray = Tray(self, ui)
+        try:
+            tray.start()
+            self.backend.notify("Switcher работает. Двойной Shift — исправить или отменить слово.")
+            if not self.profile.get_meta("welcomed"):
+                self.profile.set_meta("welcomed", "1")
+                ui.open_settings(welcome=True)
+            ui.loop()
+        finally:
+            tray.stop()
+            self.shutdown(worker)
+
+    def run(self, tray: bool = True) -> None:
+        worker = self.start()
         try:
             signal.signal(signal.SIGINT, lambda *_: self.stop_event.set())
             signal.signal(signal.SIGTERM, lambda *_: self.stop_event.set())
@@ -126,7 +178,4 @@ class App:
             if not used_tray:
                 self.backend.main_loop(self.stop_event)
         finally:
-            self.stop_event.set()
-            self.backend.stop()
-            worker.join(timeout=2)
-            self.profile.close()
+            self.shutdown(worker)
