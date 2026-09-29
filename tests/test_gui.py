@@ -3,8 +3,11 @@ import threading
 import pytest
 
 tk = pytest.importorskip("tkinter")
+# One Tk interpreter for the whole module: creating many in one process is
+# flaky on Windows ("Can't find a usable init.tcl").
 try:
-    tk.Tk().destroy()
+    ROOT = tk.Tk()
+    ROOT.withdraw()
 except tk.TclError:
     pytest.skip("no display for Tk", allow_module_level=True)
 
@@ -35,12 +38,13 @@ def window(profile, keyboard, monkeypatch):
     errors = []
     monkeypatch.setattr(gui.messagebox, "showerror", lambda *a, **k: errors.append(a))
     app = FakeApp(profile, keyboard)
-    ui = gui.Ui(app)
+    ui = gui.Ui(app, root=ROOT)
     ui.open_settings(welcome=True)
     ui.root.update()
     ui.window.errors = errors
     yield ui.window
-    ui.root.destroy()
+    ui.window.destroy()
+    ROOT.update()
 
 
 def test_settings_are_saved(window):

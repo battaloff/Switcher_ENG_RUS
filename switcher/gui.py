@@ -30,9 +30,9 @@ PAD = {"padx": 10, "pady": 4}
 
 
 class Ui:
-    def __init__(self, app):
+    def __init__(self, app, root: tk.Tk | None = None):
         self.app = app
-        self.root = tk.Tk()
+        self.root = root or tk.Tk()
         self.root.withdraw()
         self.root.title("Switcher")
         _set_icon(self.root)
@@ -125,6 +125,9 @@ def context_menu(event) -> None:
 
 
 def install_clipboard_support(root) -> None:
+    if getattr(root, "_switcher_clipboard", False):
+        return
+    root._switcher_clipboard = True
     root.bind_all("<Control-KeyPress>", ctrl_shortcut, add="+")
     root.bind_all("<Button-3>", context_menu, add="+")
 
