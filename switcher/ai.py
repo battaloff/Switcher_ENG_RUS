@@ -150,8 +150,34 @@ class Assistant:
         if self._client is None:
             import anthropic
 
-            self._client = anthropic.Anthropic(timeout=self.config.timeout, max_retries=2)
+            from .secrets import reveal
+
+            key = reveal(self.config.api_key)
+            kwargs = {"api_key": key} if key else {}
+            self._client = anthropic.Anthropic(timeout=self.config.timeout, max_retries=2, **kwargs)
         return self._client
+
+    def has_credentials(self) -> bool:
+        import os
+
+        return bool(self.config.api_key or os.environ.get("ANTHROPIC_API_KEY")
+                    or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+
+    def check_key(self) -> str:
+        """Validate the credentials without spending tokens (Models API)."""
+        import anthropic
+
+        try:
+            model = self.client.models.retrieve(self.config.model)
+        except anthropic.AuthenticationError:
+            raise AIError("ключ не подходит") from None
+        except anthropic.NotFoundError:
+            raise AIError(f"модель {self.config.model} недоступна для этого ключа") from None
+        except anthropic.APIConnectionError:
+            raise AIError("нет связи с Claude API") from None
+        except anthropic.APIStatusError as exc:
+            raise AIError(f"Claude API ответил ошибкой {exc.status_code}") from None
+        return getattr(model, "display_name", None) or self.config.model
 
     @staticmethod
     def available() -> bool:
@@ -179,7 +205,7 @@ class Assistant:
                 **kwargs,
             )
         except anthropic.AuthenticationError as exc:
-            raise AIError("нет доступа к Claude API: проверьте ANTHROPIC_API_KEY") from exc
+            raise AIError("нет доступа к Claude API: проверьте ключ в настройках") from exc
         except anthropic.RateLimitError as exc:
             raise AIError("Claude API: превышен лимит запросов, попробуйте позже") from exc
         except anthropic.APIStatusError as exc:
