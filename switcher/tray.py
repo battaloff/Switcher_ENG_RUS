@@ -89,16 +89,22 @@ class Tray:
             app.stop_event.set()
             ui.call(ui.quit)
 
+        def updates_text(item):
+            newest = next((r for r in app.releases or [] if r.relation == "newer" and not r.prerelease), None)
+            return f"Обновить до версии {newest.version}…" if newest else "Обновления…"
+
         menu = pystray.Menu(
             pystray.MenuItem("Настройки…", lambda icon, item: ui.call(ui.open_settings), default=True),
             pystray.MenuItem("Автопереключение", toggle, checked=lambda item: app.controller.enabled),
             pystray.MenuItem("Что Switcher знает обо мне…",
                              lambda icon, item: ui.call(lambda: ui.open_settings(tab="stats"))),
             pystray.MenuItem("Разобрать мои исправления (Claude)", learn, enabled=lambda item: app.ai_ready()),
+            pystray.MenuItem(updates_text, lambda icon, item: ui.call(lambda: ui.open_settings(tab="updates"))),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", quit_),
         )
         self.icon = pystray.Icon("switcher", icon_image(), "Switcher — умный переключатель раскладки", menu)
+        app.release_listeners.append(lambda releases: self.icon.update_menu())
         app.backend.notifier = lambda message: self.icon.notify(message, "Switcher")
         threading.Thread(target=self.icon.run, name="switcher-tray", daemon=True).start()
         return True

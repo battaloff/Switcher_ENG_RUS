@@ -38,6 +38,11 @@ class AI:
 
 
 @dataclass
+class Updates:
+    check_automatically: bool = True   # look for a new version on GitHub twice a day
+
+
+@dataclass
 class Config:
     enabled: bool = True
     auto_switch: bool = True
@@ -60,6 +65,7 @@ class Config:
     hotkeys: Hotkeys = field(default_factory=Hotkeys)
     learning: Learning = field(default_factory=Learning)
     ai: AI = field(default_factory=AI)
+    updates: Updates = field(default_factory=Updates)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

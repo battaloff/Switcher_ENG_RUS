@@ -25,6 +25,15 @@ class FakeApp:
         self.keyboard = keyboard
         self.stop_event = threading.Event()
         self.saved = []
+        self.releases = []  # nothing to fetch: the updates page shows this list
+        self.release_listeners = []
+        self.installed = []
+
+    def check_updates(self, force=False):
+        return self.releases
+
+    def install_update(self, release, setup):
+        self.installed.append((release.version, setup))
 
     def update_config(self, new, save=True):
         self.saved.append(new)
@@ -161,3 +170,77 @@ def test_recording_goes_through_the_window_bindings(window):
     window.update()
     assert window.hotkey_specs["toggle"] == "<f7>"
     assert window.hotkey_labels["toggle"].cget("text") == "F7"
+
+
+def fake_release(version, relation, notes=("Новое: что-то",)):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(version=version, relation=relation, notes=list(notes), date="2026-09-29",
+                           prerelease=False, size=31_000_000, url="https://example.invalid", asset_name="x.exe")
+
+
+def test_updates_page_lists_versions_with_the_right_buttons(window):
+    releases = [fake_release("0.3.0", "newer", ["Новое: тёмная тема", "Исправлено: вставка ключа"]),
+                fake_release("0.2.0", "current"), fake_release("0.1.9", "older")]
+    window.show_releases(releases)
+    assert [b.cget("text") for b in window.release_buttons] == ["Обновить", "Откатить"]
+    assert window.nav["updates"][1].cget("text") == "Обновления  ●"
+    texts = [w.cget("text") for w in _labels(window.release_box)]
+    assert "•  Новое: тёмная тема\n•  Исправлено: вставка ключа" in texts
+    assert "Установлена" in texts
+
+
+def _labels(widget):
+    import customtkinter as ctk
+
+    for child in widget.winfo_children():
+        if isinstance(child, ctk.CTkLabel):
+            yield child
+        yield from _labels(child)
+
+
+def test_update_downloads_confirms_and_installs(window, monkeypatch, tmp_path):
+    from switcher import updater
+
+    release = fake_release("0.3.0", "newer")
+    monkeypatch.setattr(updater, "can_install", lambda: True)
+    asked = []
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda title, text, **k: asked.append(text) or True)
+
+    def download(rel, progress=None):
+        progress(15, 30)
+        return tmp_path / "SwitcherSetup-0.3.0.exe"
+
+    monkeypatch.setattr(updater, "download", download)
+    window.show_releases([release])
+    window.choose_release(release)
+    assert asked and asked[0].startswith("Обновиться до версии 0.3.0?")
+    for _ in range(50):  # the download runs in a thread and reports through ui.call
+        while not window.ui._calls.empty():
+            window.ui._calls.get_nowait()()
+        if window.app.installed:
+            break
+        window.after(20)
+        window.update()
+    assert window.app.installed == [("0.3.0", tmp_path / "SwitcherSetup-0.3.0.exe")]
+    assert "перезапустится" in window.update_status.cget("text")
+
+
+def test_rollback_is_offered_but_can_be_declined(window, monkeypatch):
+    from switcher import updater
+
+    release = fake_release("0.1.9", "older")
+    monkeypatch.setattr(updater, "can_install", lambda: True)
+    asked = []
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda title, text, **k: asked.append(text) or False)
+    window.show_releases([release])
+    window.choose_release(release)
+    assert asked[0].startswith("Откатиться на версию 0.1.9?")
+    assert window.app.installed == []
+    assert all(b.cget("state") == "normal" for b in window.release_buttons)
+
+
+def test_auto_update_setting_is_saved(window):
+    window.var_auto_update.set(False)
+    window.save()
+    assert window.app.saved[-1].updates.check_automatically is False

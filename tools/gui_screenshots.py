@@ -16,25 +16,39 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGES = ["main", "keys", "ai", "rules", "stats"]
+PAGES = ["main", "keys", "ai", "rules", "stats", "updates"]
 
 
 def shoot(mode: str, out: Path) -> None:
     import customtkinter as ctk
     from PIL import ImageGrab
 
-    from switcher import autostart, gui
+    from switcher import autostart, gui, updater
     from switcher.config import Config
     from switcher.layouts import DEFAULT_KEYBOARD
     from switcher.profile import Profile
 
     autostart.is_enabled = lambda: True
+    major, minor, *_ = updater.current_version() + (0, 0)
+
+    def sample(version, notes, date):  # made-up versions around the running one, for the layout only
+        return updater.Release(version=version, key=updater.parse_version(version), title=version, notes=notes,
+                               date=date, url="", asset_url="", asset_name="", size=31_000_000)
 
     class App:
         config = Config()
         profile = Profile(":memory:")
         keyboard = DEFAULT_KEYBOARD
         stop_event = threading.Event()
+        release_listeners: list = []
+        releases = [
+            sample(f"{major}.{minor + 1}.0", ["Пример: новая функция", "Пример: исправленная ошибка"], "2026-10-12"),
+            sample(updater.__version__, ["Пример: то, что вошло в эту версию"], "2026-09-29"),
+            sample(f"{major}.{max(minor - 1, 0)}.9", ["Пример: прежняя версия"], "2026-09-01"),
+        ]
+
+        def check_updates(self, force=False):
+            return self.releases
 
         def update_config(self, new, save=True):
             pass

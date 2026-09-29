@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "switcher-ru-en"
-version = "0.1.0"
+dynamic = ["version"]  # switcher/__init__.py
 description = "Умный переключатель раскладки RU/EN, который учится на ваших исправлениях (с Claude внутри)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,9 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 switcher = "switcher.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "switcher.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["switcher*"]

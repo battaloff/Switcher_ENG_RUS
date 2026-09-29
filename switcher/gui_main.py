@@ -93,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 def selftest(report: str | None = None) -> int:
     """Exercise every part the packaged app needs, without touching the user's data."""
     os.environ["SWITCHER_HOME"] = tempfile.mkdtemp(prefix="switcher-selftest-")
+    os.environ["SWITCHER_UPDATE_REPO"] = ""  # the updates page must not go online during the test
     lines: list[str] = []
     ok = True
 
@@ -152,13 +153,23 @@ def selftest(report: str | None = None) -> int:
 
         return f"иконка {icon_image().size}"
 
+    def updates():
+        import ssl
+
+        from . import updater
+
+        certificates = ssl.create_default_context().cert_store_stats()["x509_ca"]
+        assert certificates, "no root certificates: HTTPS to GitHub would fail"
+        assert updater.parse_releases([]) == []
+        return f"корневых сертификатов: {certificates}, установка возможна: {updater.can_install()}"
+
     def gui():
         from .gui import Ui
 
         ui = Ui(state["app"])
         ui.open_settings(welcome=True)
         ui.root.update()
-        for tab in ("main", "keys", "ai", "rules", "stats"):
+        for tab in ("main", "keys", "ai", "rules", "stats", "updates"):
             ui.window.show(tab)
             ui.root.update()
         ui.root.destroy()
@@ -169,6 +180,7 @@ def selftest(report: str | None = None) -> int:
     step("клавиатура и раскладки", app)
     step("Claude SDK", claude)
     step("значок в трее", tray)
+    step("обновления", updates)
     if "app" in state:
         step("окно настроек", gui)
     text = "\n".join(lines) + f"\n{'SELFTEST OK' if ok else 'SELFTEST FAILED'}\n"

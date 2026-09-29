@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import signal
+import sys
 import threading
 import time
+from pathlib import Path
 
 from .ai import Assistant, ReviewOutcome, apply_review
 from .config import Config
@@ -51,6 +54,8 @@ class App:
         self.stop_event = threading.Event()
         self._feedback = 0
         self._reviewing = threading.Lock()
+        self.releases: list | None = None  # the last list of versions fetched from GitHub
+        self.release_listeners: list = []  # tray and settings window: called with the new list
 
     # -- event loop ----------------------------------------------------------
 
@@ -141,6 +146,67 @@ class App:
         worker.join(timeout=2)
         self.profile.close()
 
+    # -- updates -------------------------------------------------------------
+
+    def check_updates(self, force: bool = False) -> list:
+        """Fetch the versions from GitHub (UpdateError on failure); remembers when it last did."""
+        from . import updater
+
+        if not force and time.time() - float(self.profile.get_meta("update_checked_at", "0") or 0) \
+                < updater.CHECK_EVERY and self.releases is not None:
+            return self.releases
+        releases = updater.fetch_releases()
+        self.profile.set_meta("update_checked_at", str(time.time()))
+        self.releases = releases
+        for listener in list(self.release_listeners):
+            try:
+                listener(releases)
+            except Exception:
+                log.exception("release listener failed")
+        return releases
+
+    def _auto_check_updates(self) -> None:
+        from . import updater
+
+        if self.stop_event.wait(20) or not self.config.updates.check_automatically:
+            return
+        last = float(self.profile.get_meta("update_checked_at", "0") or 0)
+        if time.time() - last < updater.CHECK_EVERY:
+            return
+        try:
+            releases = self.check_updates(force=True)
+        except updater.UpdateError as exc:
+            log.info("update check failed: %s", exc)
+            return
+        newest = next((r for r in releases if r.relation == "newer" and not r.prerelease), None)
+        if newest and self.profile.get_meta("update_announced") != newest.version:
+            self.profile.set_meta("update_announced", newest.version)
+            what = f": {newest.notes[0]}" if newest.notes else ""
+            self.backend.notify(f"Вышла версия {newest.version}{what}. Обновить: Настройки → Обновления.")
+
+    def install_update(self, release, setup) -> None:
+        """Reinstall from ``setup`` (a newer or an older version) and quit; the helper starts us again."""
+        from . import autostart, updater
+
+        self.profile.set_meta("update_to", release.version)
+        exe = Path(sys.executable) if getattr(sys, "frozen", False) else None
+        updater.launch_installer(setup, autostart=autostart.is_enabled(), wait_pid=os.getpid(), relaunch=exe)
+        self.stop_event.set()
+
+    def _report_update(self) -> None:
+        """After a reinstall: say whether the chosen version is the one running now."""
+        from . import __version__, updater
+
+        target = self.profile.get_meta("update_to")
+        if not target:
+            return
+        self.profile.set_meta("update_to", "")
+        if target == __version__:
+            self.backend.notify(f"Готово: работает версия {__version__}.")
+        else:
+            self.backend.notify(f"Не получилось установить версию {target}, работает {__version__}. "
+                                f"Подробности: {updater.install_log()}")
+
     def run_gui(self) -> None:
         """Windows desktop mode: settings window (Tk) on the main thread, tray icon beside it."""
         from .gui import Ui
@@ -151,7 +217,11 @@ class App:
         tray = Tray(self, ui)
         try:
             tray.start()
-            self.backend.notify("Switcher работает. Двойной Shift — исправить или отменить слово.")
+            if self.profile.get_meta("update_to"):
+                self._report_update()
+            else:
+                self.backend.notify("Switcher работает. Двойной Shift — исправить или отменить слово.")
+            threading.Thread(target=self._auto_check_updates, name="switcher-updates", daemon=True).start()
             if not self.profile.get_meta("welcomed"):
                 self.profile.set_meta("welcomed", "1")
                 ui.open_settings(welcome=True)

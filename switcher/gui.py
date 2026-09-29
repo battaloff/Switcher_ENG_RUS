@@ -18,7 +18,7 @@ from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
-from . import autostart
+from . import __version__, autostart, updater
 from .controller import parse_hotkey
 from .engine import split_core
 from .hotkeys import MODIFIER_KEYSYMS, build_spec as build_hotkey, format_hotkey, key_name as hotkey_key_name
@@ -217,16 +217,25 @@ def make_root() -> tk.Tk:
 
 
 def _autohide_scrollbar(page: ctk.CTkScrollableFrame) -> None:
-    """Show the page's scrollbar only when the page does not fit."""
+    """Show the page's scrollbar only when the page does not fit.
+
+    The bar stays in the layout and is just painted in the background colour:
+    CustomTkinter re-grids a removed bar whenever it rescales the window.
+    """
     try:
         canvas, bar = page._parent_canvas, page._scrollbar
     except AttributeError:  # another CustomTkinter version: leave the scrollbar as it is
         return
+    theme = ctk.ThemeManager.theme["CTkScrollbar"]
+    shown = {"button_color": theme["button_color"], "button_hover_color": theme["button_hover_color"]}
+    hidden = {"button_color": WINDOW_BG, "button_hover_color": WINDOW_BG}
+    state = {"need": True}
 
     def check(_event=None):
         need = page.winfo_reqheight() > canvas.winfo_height()
-        if need != bool(bar.winfo_ismapped()):
-            bar.grid() if need else bar.grid_remove()
+        if need != state["need"]:
+            state["need"] = need
+            bar.configure(**(shown if need else hidden))
 
     page.bind("<Configure>", check, add="+")
     canvas.bind("<Configure>", check, add="+")
@@ -244,7 +253,7 @@ def _logo_image():
 
 class SettingsWindow(ctk.CTkToplevel):
     PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("ai", "Claude (ИИ)"), ("rules", "Правила"),
-             ("stats", "Что я о вас знаю"))
+             ("stats", "Что я о вас знаю"), ("updates", "Обновления"))
 
     def __init__(self, ui: Ui, welcome: bool = False):
         apply_theme()
@@ -275,9 +284,15 @@ class SettingsWindow(ctk.CTkToplevel):
         self._build(welcome)
         self._restyle()
         ctk.AppearanceModeTracker.add(self._restyle, self)
+        listeners = getattr(self.app, "release_listeners", None)
+        if listeners is not None:
+            listeners.append(self._releases_arrived)
 
     def destroy(self) -> None:
         ctk.AppearanceModeTracker.remove(self._restyle)
+        listeners = getattr(self.app, "release_listeners", None)
+        if listeners is not None and self._releases_arrived in listeners:
+            listeners.remove(self._releases_arrived)
         super().destroy()
 
     # -- layout --------------------------------------------------------------
@@ -299,6 +314,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "ai": self._ai_tab(),
             "rules": self._rules_tab(),
             "stats": self._stats_tab(),
+            "updates": self._updates_tab(),
         }
         self.current: str | None = None
         self._select("main")
@@ -335,8 +351,6 @@ class SettingsWindow(ctk.CTkToplevel):
                                    command=lambda k=key: self._select(k))
             button.pack(side="left", fill="x", expand=True)
             self.nav[key] = (marker, button)
-        from . import __version__
-
         ctk.CTkLabel(side, text=f"Версия {__version__}", font=self.fonts["small"], text_color=MUTED,
                      anchor="w").pack(side="bottom", fill="x", padx=12)
 
@@ -366,6 +380,11 @@ class SettingsWindow(ctk.CTkToplevel):
             button.configure(fg_color=SELECTED if active else "transparent")
         if tab == "stats":
             self.refresh_stats()
+        if tab == "updates" and not self._releases_shown:
+            if getattr(self.app, "releases", None) is not None:
+                self.show_releases(self.app.releases)
+            else:
+                self.check_updates()
 
     def show(self, tab: str | None = None) -> None:
         if tab in self.tabs:
@@ -411,6 +430,7 @@ class SettingsWindow(ctk.CTkToplevel):
         if subtitle:
             ctk.CTkLabel(text, text=subtitle, font=self.fonts["small"], text_color=MUTED, anchor="w", justify="left",
                          wraplength=440, height=16).pack(fill="x", pady=(2, 0))
+        row.text = text
         return row
 
     def _switch_row(self, card, var: tk.BooleanVar, title: str, subtitle: str = "") -> None:
@@ -470,9 +490,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self._switch_row(card, self.var_autostart,
                          "Запускать вместе с Windows" if _is_windows() else "Запускать при входе в систему",
                          "Switcher будет ждать в трее с самого начала")
-        row = self._row(card, "Не работать в программах",
-                        "Через запятую, достаточно части имени программы. Здесь Switcher ничего не исправляет "
-                        "и не запоминает")
+        self._row(card, "Не работать в программах",
+                  "Через запятую, достаточно части имени программы. Здесь Switcher ничего не исправляет "
+                  "и не запоминает")
         self.var_excluded = tk.StringVar(value=", ".join(c.excluded_apps))
         ctk.CTkEntry(card, textvariable=self.var_excluded, height=34, font=self.fonts["body"]).pack(
             fill="x", padx=16, pady=(0, 14))
@@ -589,6 +609,177 @@ class SettingsWindow(ctk.CTkToplevel):
         self.stats.pack(fill="both", expand=True, pady=(14, 0), padx=(0, 4))
         self.refresh_stats()
         return page
+
+    def _updates_tab(self):
+        page = self._page("Обновления", f"Сейчас установлена версия {__version__}. Выберите новую версию, чтобы "
+                                        "обновиться, или прежнюю, чтобы откатиться. Настройки и всё выученное "
+                                        "сохранятся.")
+        self.var_auto_update = tk.BooleanVar(value=self.config_copy.updates.check_automatically)
+        card = self._card(page, "Проверка")
+        self._switch_row(card, self.var_auto_update, "Проверять обновления автоматически",
+                         "Дважды в день. О новой версии Switcher скажет уведомлением у часов")
+        row = self._row(card, "Проверить сейчас")
+        self.check_button = self._button(row, "Проверить", lambda: self.check_updates(force=True), width=110)
+        self.check_button.pack(side="right")
+        self.update_status = ctk.CTkLabel(row.text, text=self._last_check_text(),
+                                          font=self.fonts["small"], text_color=MUTED, anchor="w", justify="left",
+                                          wraplength=440, height=16)
+        self.update_status.pack(fill="x", pady=(2, 0))
+
+        self.release_box = self._card(page, "Версии")
+        self.release_buttons: list[ctk.CTkButton] = []
+        self._releases_shown = False
+        ctk.CTkLabel(self.release_box, text="Загружаю список версий…", font=self.fonts["body"], text_color=MUTED,
+                     anchor="w").pack(fill="x", padx=16, pady=14)
+        self.update_progress = ctk.CTkProgressBar(page, height=8, progress_color=ACCENT)
+        self.update_progress.set(0)
+        return page
+
+    def _last_check_text(self) -> str:
+        stamp = float(self.app.profile.get_meta("update_checked_at", "0") or 0)
+        if not stamp:
+            return "Ещё не проверялось"
+        return "Последняя проверка: " + time.strftime("%d.%m в %H:%M", time.localtime(stamp))
+
+    def _releases_arrived(self, releases) -> None:
+        """From the background check (any thread)."""
+        self.ui.call(lambda: self.winfo_exists() and self.show_releases(releases))
+
+    def check_updates(self, force: bool = False) -> None:
+        self.update_status.configure(text="Проверяю…")
+        self.check_button.configure(state="disabled")
+
+        def work():
+            try:
+                releases = self.app.check_updates(force=force)
+            except updater.UpdateError as exc:
+                message = f"Не получилось: {exc}."
+                self.ui.call(lambda: self.winfo_exists() and self._check_failed(message))
+                return
+            if not force:  # a fresh list reaches show_releases through the listener
+                self.ui.call(lambda: self.winfo_exists() and self.show_releases(releases))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _check_failed(self, message: str) -> None:
+        self.check_button.configure(state="normal")
+        self.update_status.configure(text=message)
+        if not self._releases_shown:
+            self._clear_releases()
+            ctk.CTkLabel(self.release_box, text="Список версий пока недоступен.", font=self.fonts["body"],
+                         text_color=MUTED, anchor="w").pack(fill="x", padx=16, pady=14)
+
+    def _clear_releases(self) -> None:
+        for child in self.release_box.winfo_children():
+            child.destroy()
+        self.release_box._rows = 0
+        self.release_buttons = []
+
+    def show_releases(self, releases) -> None:
+        self._releases_shown = True
+        self.check_button.configure(state="normal")
+        self.update_status.configure(text=self._last_check_text())
+        self._clear_releases()
+        if not releases:
+            ctk.CTkLabel(self.release_box, text="На GitHub пока нет ни одной версии.", font=self.fonts["body"],
+                         text_color=MUTED, anchor="w").pack(fill="x", padx=16, pady=14)
+        for release in releases:
+            self._release_row(release)
+        newer = any(r.relation == "newer" and not r.prerelease for r in releases)
+        self.nav["updates"][1].configure(text="Обновления  ●" if newer else "Обновления")
+
+    def _release_row(self, release) -> None:
+        box = self.release_box
+        if box._rows:
+            line = tk.Frame(box, height=1, borderwidth=0, highlightthickness=0)
+            line.pack(fill="x", padx=16)
+            self._separators.append(line)
+            self._restyle()
+        box._rows += 1
+        row = ctk.CTkFrame(box, fg_color="transparent", corner_radius=0)
+        row.pack(fill="x", padx=16, pady=12)
+        relation = release.relation
+        if relation == "current":
+            ctk.CTkLabel(row, text="Установлена", font=self.fonts["small"], text_color=MUTED, width=110).pack(
+                side="right", anchor="n")
+        else:
+            newer = relation == "newer"
+            button = self._button(row, "Обновить" if newer else "Откатить", lambda r=release: self.choose_release(r),
+                                  primary=newer, width=110)
+            button.pack(side="right", anchor="n")
+            self.release_buttons.append(button)
+        text = ctk.CTkFrame(row, fg_color="transparent", corner_radius=0)
+        text.pack(side="left", fill="x", expand=True, padx=(0, 12))
+        head = ctk.CTkFrame(text, fg_color="transparent", corner_radius=0)
+        head.pack(fill="x")
+        ctk.CTkLabel(head, text=f"Версия {release.version}", font=self.fonts["section"], height=22).pack(side="left")
+        badge = {"newer": ("новая", BANNER, ACCENT), "current": ("у вас сейчас", SELECTED, TEXT),
+                 "older": ("прежняя", NEUTRAL, MUTED)}[relation]
+        if release.prerelease:
+            badge = ("тестовая", NEUTRAL, DANGER)
+        ctk.CTkLabel(head, text=badge[0], fg_color=badge[1], text_color=badge[2], corner_radius=6, height=20,
+                     font=self.fonts["small"]).pack(side="left", padx=8)
+        if release.date:
+            day = ".".join(reversed(release.date.split("-")))
+            ctk.CTkLabel(head, text=day, font=self.fonts["small"], text_color=MUTED, height=20).pack(side="left")
+        notes = release.notes or ["Без описания"]
+        ctk.CTkLabel(text, text="\n".join(f"•  {note}" for note in notes), font=self.fonts["small"],
+                     text_color=MUTED, anchor="w", justify="left", wraplength=440).pack(fill="x", pady=(4, 0))
+
+    def choose_release(self, release) -> None:
+        if not updater.can_install():
+            if messagebox.askyesno("Switcher", "Обновление из программы работает в установленной версии для "
+                                   "Windows. Открыть страницу этой версии на GitHub?", parent=self):
+                webbrowser.open(release.url)
+            return
+        size = f" ({release.size / 1_048_576:.0f} МБ)" if release.size else ""
+        if release.relation == "newer":
+            question = f"Обновиться до версии {release.version}?"
+        else:
+            question = f"Откатиться на версию {release.version}?"
+        details = (f"Switcher скачает установщик{size}, закроется на несколько секунд и запустится снова. "
+                   "Настройки и всё выученное сохранятся.")
+        if release.relation == "older":
+            details += "\n\nВернуться на новую версию можно здесь же."
+        if not messagebox.askyesno("Switcher", f"{question}\n\n{details}", parent=self):
+            return
+        for button in self.release_buttons + [self.check_button]:
+            button.configure(state="disabled")
+        self.update_progress.set(0)
+        self.update_progress.pack(fill="x", pady=(14, 0), padx=(0, 4))
+        self.update_status.configure(text=f"Скачиваю версию {release.version}…")
+
+        def progress(done: int, total: int) -> None:
+            self.ui.call(lambda: self.winfo_exists() and self._show_progress(release, done, total))
+
+        def work():
+            try:
+                setup = updater.download(release, progress=progress)
+            except updater.UpdateError as exc:
+                message = f"Не получилось: {exc}."
+                self.ui.call(lambda: self.winfo_exists() and self._download_failed(message))
+                return
+            self.ui.call(lambda: self.winfo_exists() and self._install(release, setup))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_progress(self, release, done: int, total: int) -> None:
+        if total:
+            self.update_progress.set(done / total)
+            self.update_status.configure(text=f"Скачиваю версию {release.version}: {done / 1_048_576:.0f} из "
+                                              f"{total / 1_048_576:.0f} МБ")
+
+    def _download_failed(self, message: str) -> None:
+        self.update_progress.pack_forget()
+        self.update_status.configure(text=message)
+        for button in self.release_buttons + [self.check_button]:
+            button.configure(state="normal")
+
+    def _install(self, release, setup) -> None:
+        self.update_progress.set(1)
+        self.update_status.configure(text=f"Устанавливаю версию {release.version}. Switcher перезапустится сам.")
+        self.update_idletasks()
+        self.app.install_update(release, setup)
 
     def _restyle(self, _mode: str | None = None) -> None:
         """Plain Tk and ttk widgets do not follow CustomTkinter's light/dark colours by themselves."""
@@ -759,6 +950,7 @@ class SettingsWindow(ctk.CTkToplevel):
         except ValueError:
             raise ValueError("«Разбирать мои исправления»: нужно число, например 20") from None
         new.ai.fix_typos = self.var_typos.get()
+        new.updates.check_automatically = self.var_auto_update.get()
         key = self._entered_key()
         if key is not None:
             new.ai.api_key = protect(key)

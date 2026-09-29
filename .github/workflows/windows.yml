@@ -30,6 +30,17 @@ jobs:
       - name: Unit tests
         run: python -m pytest -q
 
+      - name: Release version and notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version="$(python -c 'import switcher; print(switcher.__version__)')"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match switcher.__version__ $version"; exit 1
+          fi
+          python tools/release_notes.py "$version" > release-notes.md
+          cat release-notes.md
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
@@ -39,6 +50,9 @@ jobs:
       - name: Install, start and uninstall
         shell: pwsh
         run: ./packaging/windows/check_install.ps1
+
+      - name: Update from the app (end-to-end)
+        run: python tools/windows_update_smoke.py
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,6 +83,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create "$GITHUB_REF_NAME" dist/SwitcherSetup-*.exe
-          --title "Switcher $GITHUB_REF_NAME"
-          --notes-file packaging/windows/RELEASE_NOTES.md
-          --prerelease
+          --title "Switcher ${GITHUB_REF_NAME#v}"
+          --notes-file release-notes.md
