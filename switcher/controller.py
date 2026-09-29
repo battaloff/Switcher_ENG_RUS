@@ -18,9 +18,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 from .config import Config
-from .engine import Context, Decision, Engine
-from .layouts import EN, RU, Keyboard, Stroke, canonical_keys, letter_lang, other, text_lang
+from .engine import Context, Decision, Engine, decide_prefix
+from .layouts import EN, RU, Keyboard, Stroke, canonical_keys, harmonize_case, letter_lang, other, text_lang
 from .learner import Learner, core_of, levenshtein
+from .speller import Speller
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,8 @@ class Token:
     reopened_from: "Token | None" = None
     prefix_hint: tuple[list[Stroke], str, str] | None = None  # (strokes, lang, text) erased just before
     manual_from: str | None = None       # converted mid-word by the hotkey, from this language
+    early_from: str | None = None        # switched by us after the first letters, from this language
+    early_undone: bool = False           # the user rejected our early switch for this word
     # filled in on commit
     text: str = ""
     lang: str = ""
@@ -86,6 +89,8 @@ class Controller:
         self.config = config
         self.keyboard = keyboard
         self.ai = ai
+        self.speller = Speller(engine.models, keyboard)
+        self._spell_keep: set[tuple[str, str]] = set()  # corrections the user undid (even with learning off)
         self._run_async = run_async or self._thread_async
         self.post: Callable[[Callable[[], None]], None] = lambda fn: fn()  # replaced by the runtime
         self.enabled = config.enabled
@@ -97,6 +102,7 @@ class Controller:
         self.erased_prefix: tuple[list[Stroke], str, str] | None = None
         self.undo_target: Token | None = None
         self.manual_target: tuple[Token, str, tuple[str, str] | None, float] | None = None
+        self.early_rejected: tuple[str, str] | None = None  # (keys, lang) of an early switch erased by the user
         self.mods: set[str] = set()
         self._tap_mod: str | None = None          # modifier pressed alone, may become a tap
         self._tap_down_at = 0.0
@@ -187,6 +193,7 @@ class Controller:
         self.erased_prefix = None
         self.undo_target = None
         self.manual_target = None
+        self.early_rejected = None
         self._generation += 1
 
     # -- typing --------------------------------------------------------------
@@ -219,6 +226,8 @@ class Controller:
             if self.erased_prefix and self.erased_prefix[1] != lang:
                 self.cur.prefix_hint = self.erased_prefix
             self.erased_prefix = None
+            if self.early_rejected and self.early_rejected[1] == lang:
+                self.cur.early_undone = True  # erased our early switch and retypes in the old layout
         cur = self.cur
         if letter:
             if not cur.has_letters and letter != cur.typed_lang:
@@ -230,6 +239,24 @@ class Controller:
             cur.has_letters = True
         cur.strokes.append(stroke)
         cur.chars.append(char)
+        if letter:
+            self._maybe_switch_early()
+
+    def _maybe_switch_early(self) -> None:
+        """Punto-style: switch as soon as the first letters show the layout is wrong."""
+        cur = self.cur
+        if (cur is None or not (self.config.early_switch and self.enabled and self.config.auto_switch)
+                or cur.mixed or cur.manual_from is not None or cur.early_from is not None or cur.early_undone
+                or cur.reopened_from is not None or cur.prefix_hint is not None or self._excluded()
+                or cur.chars[0] in "'\"`~<{"):
+            return
+        decision = decide_prefix(self.engine, cur.strokes, cur.typed_lang, self._context(self.history))
+        if not decision.switch:
+            return
+        self._switch_layout(decision.target_lang)
+        self._rewrite(len(cur.chars), decision.text)
+        cur.early_from = cur.typed_lang
+        cur.chars, cur.typed_lang = list(decision.text), decision.target_lang
 
     def _on_backspace(self) -> None:
         self._generation += 1
@@ -245,6 +272,8 @@ class Controller:
                     self.erased = cur.reopened_from
                 else:
                     self.erased_prefix = snapshot
+                if cur.early_from is not None:
+                    self.early_rejected = (canonical_keys(snapshot[0]), cur.early_from)
                 self.cur = None
             return
         if self.history:
@@ -281,9 +310,13 @@ class Controller:
 
     # -- finishing a word ----------------------------------------------------
 
-    def _context(self, prev: list[Token]) -> Context:
+    def _careful(self) -> bool:
+        """Code editors and terminals: only whole words, with more proof, and no autocorrect."""
         app = self.app.lower()
-        careful = any(name in app for name in self.config.careful_apps)
+        return any(name in app for name in self.config.careful_apps)
+
+    def _context(self, prev: list[Token]) -> Context:
+        careful = self._careful()
         return Context(
             app=self.app,
             prev_langs=[t.lang for t in prev[-3:] if t.lang in (EN, RU)],
@@ -315,9 +348,13 @@ class Controller:
             self._detect_prefix_fix(tok)
 
         can_change = (allow_change and self.enabled and self.config.auto_switch
-                      and not tok.mixed and not tok.retyped and tok.manual_from is None)
+                      and not tok.mixed and not tok.retyped and tok.manual_from is None and not tok.early_undone)
 
-        if tok.manual_from is not None:
+        if tok.early_undone:
+            self._learn_early_rejection(tok)
+        if tok.early_from is not None and not tok.mixed and tok.manual_from is None:
+            self._finish_early(tok, allow_change)
+        elif tok.manual_from is not None:
             rule = self.learner.manual(app=self.app, strokes=tok.strokes, typed_lang=tok.manual_from,
                                        typed_text=self.keyboard.text(tok.strokes, tok.manual_from),
                                        target_lang=tok.typed_lang, target_text=tok.text, via="hotkey")
@@ -330,6 +367,8 @@ class Controller:
                 self._apply_decision(tok)
             if tok.change == "" and can_change and self.config.learning.typo_rules:
                 self._apply_replace_rule(tok)
+        if can_change and tok.change in ("", "convert"):
+            self._apply_spelling(tok)
 
         self.learner.committed(app=self.app, lang=tok.lang, text=tok.text, decision=tok.decision,
                                changed_from=tok.original_text if tok.change == "convert" else None)
@@ -337,6 +376,48 @@ class Controller:
         del self.history[:-8]
         self.erased = None
         return tok
+
+    def _finish_early(self, tok: Token, allow_change: bool) -> None:
+        """The word switched after its first letters is complete: keep the switch or take it back."""
+        source, target = tok.early_from, tok.typed_lang
+        screen = tok.text
+        original = harmonize_case(screen, self.keyboard.text(tok.strokes, source))
+        d = self.engine.decide(tok.strokes, source, self._context(self.history), typed_text=original)
+        tok.decision = d
+        if d.reason == "rule":
+            keep = d.action == "convert"
+        else:
+            keep = d.reason != "model" or d.margin >= 0  # the whole word still reads better switched
+        tok.typed_lang = source
+        if not keep and allow_change:
+            self._switch_layout(source)
+            self._rewrite(len(screen) + len(tok.delim), original + tok.delim)
+            tok.text, tok.lang = original, source
+            self.learner.early_reverted(app=self.app, typed_text=original, typed_lang=source, shown_text=screen)
+            return
+        tok.original_text, tok.lang, tok.change = original, target, "convert"
+        group = self._look_back(tok, target) if self.config.look_back and allow_change else []
+        if group:
+            old = "".join(t.text + t.delim for t, _ in group) + screen + tok.delim
+            for t, td in group:
+                t.original_text, t.text, t.lang, t.change, t.decision = t.text, td.text, td.target_lang, "convert", td
+            self._rewrite(len(old), "".join(t.text + t.delim for t, _ in group) + screen + tok.delim)
+            tok.group = [t for t, _ in group]
+            for t, td in group:
+                self.learner.committed(app=self.app, lang=t.lang, text=t.text, decision=td,
+                                       changed_from=t.original_text)
+        self.undo_target = tok
+
+    def _learn_early_rejection(self, tok: Token) -> None:
+        """The user undid our early switch: keep this word as typed from now on."""
+        rejected, self.early_rejected = self.early_rejected, None
+        keys = canonical_keys(tok.strokes)
+        if rejected and not keys.startswith(rejected[0]):
+            return  # erased our switch, then typed a different word
+        converted_lang = other(tok.typed_lang)
+        self.learner.undo(app=self.app, strokes=tok.strokes, typed_lang=tok.typed_lang, typed_text=tok.text,
+                          converted_lang=converted_lang,
+                          converted_text=self.keyboard.text(tok.strokes, converted_lang), reason="early")
 
     def _apply_decision(self, tok: Token) -> None:
         d = tok.decision
@@ -396,6 +477,40 @@ class Controller:
         self.undo_target = tok
         self.learner.replace_applied(app=self.app, wrong=core, right=right)
 
+    def _sentence_start(self) -> bool:
+        if not self.history:
+            return True  # nothing known before the word
+        last = self.history[-1]
+        return "\n" in last.delim or last.text.rstrip()[-1:] in (".", "!", "?", "…")
+
+    def _apply_spelling(self, tok: Token) -> None:
+        """Autocorrect: "превет" → "привет" once the word is finished."""
+        if not self.config.autocorrect or self._careful() or tok.lang not in (EN, RU):
+            return
+        start, end, core = core_of(tok.text, tok.lang)
+        if len(core) < 3 or not core.isalpha() or core[1:] != core[1:].lower():
+            return  # ALL-CAPS abbreviations, iPhone-like names
+        if core[0].isupper() and not self._sentence_start():
+            return  # a capital in mid-sentence is most likely a name
+        word = core.lower()
+        if (tok.lang, word) in self._spell_keep or self.learner.profile.personal_zipf(word, tok.lang) is not None:
+            return
+        fix = self.speller.suggest(word, tok.lang)
+        if fix is None:
+            return
+        right = match_case(core, fix.word)
+        new_text = tok.text[:start] + right + tok.text[end:]
+        self._rewrite(len(tok.text) + len(tok.delim), new_text + tok.delim)
+        if tok.change == "":
+            tok.original_text, tok.change = tok.text, "spell"
+        tok.text = new_text
+        self.undo_target = tok
+        self.learner.spelling_fixed(app=self.app, wrong=core, right=right, lang=tok.lang)
+
+    def _keep_spelling(self, word: str, lang: str, right: str) -> None:
+        self._spell_keep.add((lang, word.lower()))
+        self.learner.spelling_undone(app=self.app, wrong=word, right=right, lang=lang)
+
     def _detect_retype(self, tok: Token) -> None:
         old = self.erased
         if old is None or tok.mixed:
@@ -418,6 +533,12 @@ class Controller:
             if tok.text == old.original_text:
                 tok.retyped = True
                 self.learner.replace_undone(app=self.app, wrong=old.original_text, right=old.text)
+        elif tok.typed_lang == old.lang and old.change == "spell":
+            if tok.text == old.original_text:
+                tok.retyped = True  # erased our correction and typed their own word again
+                _, _, wrong = core_of(tok.text, tok.lang)
+                _, _, right = core_of(old.text, old.lang)
+                self._keep_spelling(wrong, tok.lang, right)
         elif tok.typed_lang == old.lang and not same_keys:
             _, _, wrong = core_of(old.text, old.lang)
             _, _, right = core_of(tok.text, tok.lang)
@@ -494,6 +615,10 @@ class Controller:
             new = self.keyboard.text(cur.strokes, target)
             self._switch_layout(target)
             self._rewrite(len(cur.chars), new)
+            if cur.early_from == target:
+                # our early switch was wrong: back to what the user typed, and remember the word
+                cur.chars, cur.typed_lang, cur.early_from, cur.early_undone = list(new), target, None, True
+                return
             if cur.manual_from is None:
                 cur.manual_from = cur.typed_lang
             elif cur.manual_from == target:
@@ -546,6 +671,10 @@ class Controller:
                               reason=d.reason if d else "model")
         elif change == "replace":
             self.learner.replace_undone(app=self.app, wrong=tok.text, right=converted_text)
+        elif change == "spell":
+            _, _, wrong = core_of(tok.text, tok.lang)
+            _, _, right = core_of(converted_text, converted_lang)
+            self._keep_spelling(wrong, tok.lang, right)
 
     def convert_selection(self) -> None:
         text = self.backend.copy_selection()

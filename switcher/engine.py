@@ -42,6 +42,17 @@ class Tuning:
     app_weight: float = 0.8         # pull towards the app's usual language at phrase start
     manual_switch_extra: float = 1.5  # the user just switched layout by hand: trust them
     ambiguity_band: float = 1.5
+    # Early switch, Punto-style: decide after the first few letters of a word.
+    # Per prefix length (3, 4, 5+): the other layout must start common words,
+    # the typed letters must start almost none and look unnatural.
+    # Measured with tools/evaluate_early.py: 0 of 40 000 frequent words typed in the
+    # right layout switch; 86% of words typed in the wrong one switch by the 4th letter.
+    early_min_letters: int = 3
+    early_alt_min: tuple[float, ...] = (5.0, 4.0, 3.5)
+    early_typed_max: tuple[float, ...] = (1.0, 2.0, 2.0)
+    early_margin: tuple[float, ...] = (4.5, 3.0, 2.5)
+    early_plaus_max: float = -0.5
+    early_context: float = 0.5      # margin shift from the language of the phrase so far
 
 
 # Single letters that are words on their own; corpora are full of the others
@@ -73,6 +84,9 @@ class ProfileView(Protocol):
 
     def threshold_offset(self, app: str) -> float: ...
 
+    def keeps_prefix(self, keys: str, text: str, lang: str, app: str) -> bool:
+        """The user taught us a word in ``lang`` that starts like this (rule or personal word)."""
+
 
 class NullProfile:
     def layout_rule(self, keys, app):
@@ -86,6 +100,9 @@ class NullProfile:
 
     def threshold_offset(self, app):
         return 0.0
+
+    def keeps_prefix(self, keys, text, lang, app):
+        return False
 
 
 @dataclass
@@ -321,6 +338,72 @@ class Engine:
             decision.text = caps
             decision.notes.append("caps-lock")
         return decision
+
+
+@dataclass
+class EarlyDecision:
+    switch: bool
+    typed_lang: str
+    target_lang: str
+    text: str = ""                  # the prefix as it reads in the target layout
+    typed_zipf: float | None = None  # how common words starting like the typed letters are
+    alt_zipf: float | None = None
+    plausibility: float = 0.0
+    reason: str = ""
+
+
+def _by_length(values: tuple[float, ...], n: int, first: int) -> float:
+    return values[min(len(values) - 1, max(0, n - first))]
+
+
+def decide_prefix(engine: "Engine", strokes: Sequence[Stroke], typed_lang: str,
+                  ctx: Context | None = None) -> EarlyDecision:
+    """Should the word being typed switch layout now, before it is finished?"""
+    ctx = ctx or Context()
+    t = engine.tuning
+    alt_lang = other(typed_lang)
+    result = EarlyDecision(False, typed_lang, alt_lang)
+    n = len(strokes)
+    if n < t.early_min_letters:
+        result.reason = "short"
+        return result
+    if ctx.manual_switch or ctx.extra_threshold > 0:
+        result.reason = "manual-switch" if ctx.manual_switch else "careful-app"
+        return result
+    typed = engine.keyboard.text(strokes, typed_lang)
+    alt = engine.keyboard.text(strokes, alt_lang)
+    if not all(is_letter(ch, alt_lang) for ch in alt) or any(ch.isdigit() for ch in typed):
+        result.reason = "not-letters"
+        return result
+    typed_models, alt_models = engine.models[typed_lang], engine.models[alt_lang]
+    typed_low, alt_low = typed.lower(), alt.lower()
+    typed_letters = all(is_letter(ch, typed_lang) for ch in typed_low)
+    result.typed_zipf = typed_models.lexicon.prefix_zipf(typed_low) if typed_letters else None
+    result.alt_zipf = alt_models.lexicon.prefix_zipf(alt_low)
+    result.plausibility = typed_models.prefix_plausibility(typed_low) if typed_letters else -9.0
+    result.text = harmonize_case(typed, alt)
+    first = t.early_min_letters
+    shift = 0.0
+    previous = list(ctx.prev_langs[-3:])
+    if previous:
+        shift = t.early_context * (sum(1 for l in previous if l == typed_lang)
+                                   - sum(1 for l in previous if l == alt_lang)) / len(previous)
+    typed_zipf = result.typed_zipf if result.typed_zipf is not None else -1.0
+    alt_zipf = result.alt_zipf if result.alt_zipf is not None else -1.0
+    if alt_zipf < _by_length(t.early_alt_min, n, first) + shift:
+        result.reason = "other-layout-rare"
+    elif typed_zipf > _by_length(t.early_typed_max, n, first):
+        result.reason = "typed-is-a-word-start"
+    elif result.plausibility > t.early_plaus_max:
+        result.reason = "typed-looks-natural"
+    elif alt_zipf - typed_zipf < _by_length(t.early_margin, n, first) + shift:
+        result.reason = "small-margin"
+    elif engine.profile.keeps_prefix(canonical_keys(strokes), typed_low, typed_lang, ctx.app):
+        result.reason = "user-word"  # checked last: it scans the user's rules and words
+    else:
+        result.switch = True
+        result.reason = "early"
+    return result
 
 
 def explain(decision: Decision) -> str:

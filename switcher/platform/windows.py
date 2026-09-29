@@ -47,6 +47,10 @@ user32.GetGUIThreadInfo.restype = wintypes.BOOL
 WM_INPUTLANGCHANGEREQUEST = 0x0050
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 VK_CAPITAL = 0x14
+VK_BACK, VK_TAB, VK_RETURN = 0x08, 0x09, 0x0D
+# Tag in dwExtraInfo of every key we send.  The hook drops exactly these, so keys
+# the user (or an automated check) types while we are typing are never lost.
+OWN_INPUT = 0x53574348  # "SWCH"
 _PRIMARY_LANG = {0x09: EN, 0x19: RU}
 
 _VK = {0x30 + i: str(i) for i in range(10)}
@@ -70,6 +74,7 @@ class WindowsBackend(BaseBackend):
         super().__init__(*args, **kwargs)
         self._hkls: dict[str, int] = {}
         self._app_cache: tuple[int, float, str] = (0, 0.0, "")
+        self._pending_layout: tuple[str | None, float] = (None, 0.0)
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -91,7 +96,13 @@ class WindowsBackend(BaseBackend):
 
     def current_layout(self) -> str | None:
         tid, _ = self._foreground_thread()
-        return _lang_of(user32.GetKeyboardLayout(tid))
+        actual = _lang_of(user32.GetKeyboardLayout(tid))
+        pending, since = self._pending_layout
+        if pending and actual != pending and time.monotonic() - since < 0.5:
+            # we asked for a switch a moment ago; keys typed now reach the window after it applies
+            return pending
+        self._pending_layout = (None, 0.0)
+        return actual
 
     def set_layout(self, lang: str) -> bool:
         if lang not in self._hkls:
@@ -105,7 +116,10 @@ class WindowsBackend(BaseBackend):
         info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
         if user32.GetGUIThreadInfo(tid, ctypes.byref(info)) and info.hwndFocus:
             hwnd = info.hwndFocus
-        return bool(user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, ctypes.c_ssize_t(hkl).value))
+        posted = bool(user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, ctypes.c_ssize_t(hkl).value))
+        if posted:
+            self._pending_layout = (lang, time.monotonic())
+        return posted
 
     def active_app(self) -> str:
         _, pid = self._foreground_thread()
@@ -146,6 +160,26 @@ class WindowsBackend(BaseBackend):
             real = real.upper() if upper else real.lower()
         return "char", real, code
 
+    def _listener_options(self) -> dict:
+        return {"win32_event_filter": lambda msg, data: (data.dwExtraInfo or 0) != OWN_INPUT}
+
+    @staticmethod
+    def _send(keys: list[tuple[int, int, int]]) -> None:
+        """SendInput a batch of (vk, scan, flags), tagged as ours; a batch is never split by other input."""
+        from pynput._util.win32 import INPUT, INPUT_union, KEYBDINPUT, SendInput
+
+        events = [INPUT(type=INPUT.KEYBOARD, value=INPUT_union(ki=KEYBDINPUT(
+            wVk=vk, wScan=scan, dwFlags=flags, dwExtraInfo=OWN_INPUT))) for vk, scan, flags in keys]
+        SendInput(len(events), ctypes.byref((INPUT * len(events))(*events)), ctypes.sizeof(INPUT))
+
+    def backspace(self, count: int) -> None:
+        from pynput._util.win32 import KEYBDINPUT
+
+        for _ in range(count):
+            self._send([(VK_BACK, 0, 0), (VK_BACK, 0, KEYBDINPUT.KEYUP)])
+            if self.delay:
+                time.sleep(self.delay)
+
     def type_text(self, text: str) -> None:
         """Type as Unicode characters, never as virtual keys.
 
@@ -154,28 +188,19 @@ class WindowsBackend(BaseBackend):
         reached it yet, turning "hello" into "руддщ".  Unicode input does not
         depend on the layout.
         """
-        from pynput._util.win32 import INPUT, INPUT_union, KEYBDINPUT, SendInput
+        from pynput._util.win32 import KEYBDINPUT
 
-        self._busy()
-        try:
-            for ch in text:
-                if ch in "\n\t":
-                    key = self._pk.Key.enter if ch == "\n" else self._pk.Key.tab
-                    self._out.press(key)
-                    self._out.release(key)
-                else:
-                    encoded = ch.encode("utf-16-le")
-                    units = [int.from_bytes(encoded[i:i + 2], "little") for i in range(0, len(encoded), 2)]
-                    events = [
-                        INPUT(type=INPUT.KEYBOARD, value=INPUT_union(ki=KEYBDINPUT(
-                            wVk=0, wScan=unit, dwFlags=KEYBDINPUT.UNICODE | flags)))
-                        for flags in (0, KEYBDINPUT.KEYUP) for unit in units
-                    ]
-                    SendInput(len(events), ctypes.byref((INPUT * len(events))(*events)), ctypes.sizeof(INPUT))
-                if self.delay:
-                    time.sleep(self.delay)
-        finally:
-            self._settle()
+        for ch in text:
+            if ch in "\n\t":
+                vk = VK_RETURN if ch == "\n" else VK_TAB
+                self._send([(vk, 0, 0), (vk, 0, KEYBDINPUT.KEYUP)])
+            else:
+                encoded = ch.encode("utf-16-le")
+                units = [int.from_bytes(encoded[i:i + 2], "little") for i in range(0, len(encoded), 2)]
+                self._send([(0, unit, KEYBDINPUT.UNICODE | flags) for flags in (0, KEYBDINPUT.KEYUP)
+                            for unit in units])
+            if self.delay:
+                time.sleep(self.delay)
 
     def caps_lock_on(self) -> bool | None:
         return bool(user32.GetKeyState(VK_CAPITAL) & 1)

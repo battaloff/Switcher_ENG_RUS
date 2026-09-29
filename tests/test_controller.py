@@ -128,7 +128,7 @@ def test_retype_after_a_miss_is_learned(make_screen, profile):
 
 
 def test_typo_fixed_twice_becomes_a_rule(make_screen, profile):
-    s = make_screen(layout=RU)
+    s = make_screen(Config(autocorrect=False), layout=RU)  # for typos autocorrect does not know
     for _ in range(2):
         s.write("превет ")
         s.backspace_key(7)
@@ -162,7 +162,7 @@ def test_caps_lock_is_fixed(make_screen):
 
 
 def test_mouse_click_forgets_the_context(make_screen):
-    s = make_screen(layout=EN)
+    s = make_screen(Config(early_switch=False), layout=EN)
     s.write("ghbdtn", EN)
     s.click()  # the cursor may be elsewhere now
     s.space()
@@ -170,10 +170,14 @@ def test_mouse_click_forgets_the_context(make_screen):
 
 
 def test_enter_does_not_rewrite_by_default(make_screen):
-    s = make_screen(layout=EN)
+    s = make_screen(Config(early_switch=False), layout=EN)
     s.write("ghbdtn\n", EN)
     assert s.text == "ghbdtn\n"
-    s = make_screen(Config(convert_on_enter=True), layout=EN)
+    s = make_screen(Config(convert_on_enter=True, early_switch=False), layout=EN)
+    s.write("ghbdtn\n", EN)
+    assert s.text == "привет\n"
+    # switched while typing, before Enter could send anything
+    s = make_screen(layout=EN)
     s.write("ghbdtn\n", EN)
     assert s.text == "привет\n"
 
@@ -256,3 +260,149 @@ def test_hotkeys_do_nothing_in_own_settings_window(make_screen):
         s._event("press", "ctrl")
         s._event("release", "ctrl")
     assert s.controller.enabled is True
+
+
+# -- early switch (Punto-style) ------------------------------------------------
+
+
+def test_layout_switches_after_the_first_letters(make_screen):
+    s = make_screen(layout=EN)
+    s.write("прив", RU)  # keys of "прив" pressed on the English layout
+    assert s.text == "прив" and s.layout == RU
+    s.write("ет, как дела ", RU)  # the rest is typed in Russian already
+    assert s.text == "привет, как дела "
+    s = make_screen(layout=RU)
+    s.write("world", EN)
+    assert s.text == "world" and s.layout == EN
+
+
+def test_correct_words_never_switch_mid_word(make_screen):
+    for text, lang in (("привет как дела я пушну коммит ", RU), ("hello world see you at the meeting ", EN)):
+        s = make_screen(layout=lang)
+        s.write(text, lang)
+        assert s.text == text and s.layout == lang
+
+
+def test_early_switch_is_taken_back_when_the_whole_word_says_so(make_screen, monkeypatch):
+    from switcher import controller as ctl
+    from switcher.engine import EarlyDecision
+
+    def eager(engine, strokes, typed_lang, ctx=None):  # a wrong guess after three letters
+        if len(strokes) == 3 and typed_lang == EN:
+            text = engine.keyboard.text(strokes, RU)
+            return EarlyDecision(True, EN, RU, text=text, reason="early")
+        return EarlyDecision(False, typed_lang, RU if typed_lang == EN else EN)
+
+    monkeypatch.setattr(ctl, "decide_prefix", eager)
+    s = make_screen(layout=EN)
+    s.write("hel", EN)
+    assert s.text == "руд" and s.layout == RU
+    s.write("lo ", EN)
+    assert s.text == "hello " and s.layout == EN
+
+
+def test_double_shift_mid_word_rejects_the_early_switch_and_teaches(make_screen, profile):
+    s = make_screen(layout=EN)
+    s.write("ghbd", EN)
+    assert s.text == "прив"
+    s.double_shift()
+    assert s.text == "ghbd" and s.layout == EN
+    s.write("tn ", EN)
+    assert s.text == "ghbdtn "
+    assert profile.layout_rule("ghbdtn", "notes") == (EN, "learned")
+    s.write("ghbdtn ", EN)  # no early switch and no switch at the end any more
+    assert s.text == "ghbdtn ghbdtn "
+
+
+def test_undo_after_the_word_restores_what_was_typed(make_screen, profile):
+    s = make_screen(layout=EN)
+    s.write("ghbdtn ", EN)
+    assert s.text == "привет "
+    s.double_shift()
+    assert s.text == "ghbdtn " and s.layout == EN
+    assert profile.layout_rule("ghbdtn", "notes") == (EN, "learned")
+
+
+def test_erasing_the_switched_letters_and_retyping_teaches(make_screen, profile):
+    s = make_screen(layout=EN)
+    s.write("ghbd", EN)
+    assert s.text == "прив"
+    s.backspace_key(4)
+    s.switch_layout(EN)
+    s.write("ghbdtn ", EN)
+    assert s.text == "ghbdtn "
+    assert profile.layout_rule("ghbdtn", "notes") == (EN, "learned")
+
+
+def test_early_switch_fixes_the_short_word_before(make_screen):
+    s = make_screen(layout=EN)
+    s.write("у меня ", RU)
+    assert s.text == "у меня "
+
+
+def test_no_early_switch_where_it_is_off_or_risky(make_screen):
+    s = make_screen(Config(early_switch=False), layout=EN)
+    s.write("прив", RU)
+    assert s.text == "ghbd"
+    s.write("ет ", RU)
+    assert s.text == "привет "  # still fixed, at the end of the word
+    s = make_screen(layout=EN, app="Code")  # code editors: only whole words, more carefully
+    s.write("прив", RU)
+    assert s.text == "ghbd"
+    s = make_screen(layout=EN)
+    s.write("да ", RU)
+    s.click()
+    s.clock += 2  # a moment later, not the echo of our own switch
+    s.switch_layout(EN)  # the user picked the layout by hand just now
+    s.write("прив", RU)
+    assert s.text.endswith("ghbd")
+
+
+# -- autocorrect -----------------------------------------------------------------
+
+
+def test_typos_are_fixed_when_the_word_ends(make_screen, profile):
+    s = make_screen(layout=RU)
+    s.write("Превет, как дила? ")
+    assert s.text == "Привет, как дела? "
+    s = make_screen(layout=EN)
+    s.write("teh cat ")
+    assert s.text == "the cat "
+    assert [e["kind"] for e in profile.events(["spell"])] == ["spell", "spell", "spell"]
+
+
+def test_wrong_layout_and_typo_together(make_screen):
+    s = make_screen(layout=EN)
+    s.write("превет ", RU)  # keys of "превет" on the English layout
+    assert s.text == "привет "
+
+
+def test_undoing_a_correction_protects_the_word(make_screen, profile):
+    s = make_screen(layout=RU)
+    s.write("превет ")
+    assert s.text == "привет "
+    s.double_shift()
+    assert s.text == "превет "
+    s.write("превет ")
+    assert s.text == "превет превет "
+    assert profile.personal_zipf("превет", RU) is not None
+
+
+def test_retyping_the_original_protects_it_too(make_screen):
+    s = make_screen(layout=RU)
+    s.write("превет ")
+    s.backspace_key(7)
+    s.write("превет ")
+    assert s.text == "превет "
+
+
+def test_autocorrect_leaves_names_abbreviations_code_and_real_words(make_screen):
+    s = make_screen(layout=RU)
+    s.write("были у Превета и в ПРЕВЕТ щас ваще ")
+    assert s.text == "были у Превета и в ПРЕВЕТ щас ваще "
+    s = make_screen(layout=RU, app="Code")
+    s.write("превет ")
+    assert s.text == "превет "
+    s = make_screen(Config(autocorrect=False), layout=RU)
+    s.write("превет ")
+    assert s.text == "превет "

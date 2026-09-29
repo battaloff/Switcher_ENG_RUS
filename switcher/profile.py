@@ -147,6 +147,15 @@ class Profile:
             bias -= 0.5
         return max(-1.0, min(1.0, bias))
 
+    def keeps_prefix(self, keys: str, text: str, lang: str, app: str) -> bool:
+        """The user taught us a word in ``lang`` starting with these keys: a rule or a personal word."""
+        with self._lock:
+            for (kind, pattern, scope), rule in self._rules.items():
+                if kind == "layout" and rule.value == lang and scope in ("", app) and pattern.startswith(keys):
+                    return True
+            return any(l == lang and count >= self.min_vocab_count and word.startswith(text)
+                       for (l, word), count in self._vocab.items())
+
     def threshold_offset(self, app: str) -> float:
         offset = self._tuning.get("", (0.0, ""))[0]
         if app:

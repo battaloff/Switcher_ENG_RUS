@@ -14,6 +14,7 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 
 from ..layouts import EN, RU, letter_lang
 from .base import BaseBackend
@@ -64,6 +65,8 @@ class LinuxBackend(BaseBackend):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._echo: deque[tuple[str, str | None]] = deque()
+        self._echo_deadline = 0.0
         self._x = _load_x11()
         self._display = self._x.XOpenDisplay(None)
         if not self._display:
@@ -148,7 +151,7 @@ class LinuxBackend(BaseBackend):
                 if 0x20 < keysym < 0x7F:
                     keycodes.setdefault(chr(keysym), keycode)
             specials = {name: d.keysym_to_keycode(getattr(XK, f"XK_{name}"))
-                        for name in ("space", "Return", "Tab", "Shift_L")}
+                        for name in ("space", "Return", "Tab", "Shift_L", "BackSpace")}
             self._xt = (d, keycodes, specials)
         return self._xt
 
@@ -165,14 +168,53 @@ class LinuxBackend(BaseBackend):
             xtest.fake_input(d, X.KeyRelease, specials["Shift_L"])
         d.sync()
 
+    # -- telling our own keys from the user's ---------------------------------
+    # XTest input comes back through the hook unflagged.  Instead of ignoring
+    # every key for a while (which loses keys the user types meanwhile, e.g.
+    # right after a switch in the middle of a word), we list the keys we are
+    # about to press and drop exactly those, in order.
+
+    def _expect(self, keys: list[tuple[str, str | None]]) -> None:
+        with self._lock:
+            self._echo.extend(keys)
+            self._echo_deadline = time.monotonic() + 2.0
+
+    def _consume_echo(self, ident: tuple[str, str | None]) -> bool:
+        with self._lock:
+            if self._echo and time.monotonic() > self._echo_deadline:
+                self._echo.clear()  # some never came back; stop waiting for them
+            if self._echo and self._echo[0] == ident:
+                self._echo.popleft()
+                return True
+            return False
+
+    def _on_press(self, key, injected: bool = False) -> None:
+        try:
+            name, char, code = self._describe(key)
+            if self._consume_echo((name, code)):
+                return
+            if self._is_echo():  # caps lock, copy/paste shortcuts: short blanket window
+                return
+            self._emit("press", name, char, code)
+        except Exception:  # never let an exception kill the OS hook
+            log.exception("press handler failed")
+
+    def backspace(self, count: int) -> None:
+        _, _, specials = self._xtest()
+        self._expect([("backspace", None)] * count)
+        for _ in range(count):
+            self._tap(specials["BackSpace"], False)
+            if self.delay:
+                time.sleep(self.delay)
+
     def type_text(self, text: str) -> None:
         d, keycodes, specials = self._xtest()
         start = current = self._state().group
-        self._busy()
         try:
             for ch in text:
                 special = {" ": "space", "\n": "Return", "\t": "Tab"}.get(ch)
                 if special:
+                    self._expect([({"space": "space", "Return": "enter", "Tab": "tab"}[special], None)])
                     self._tap(specials[special], False)
                     continue
                 here = self._groups[current] if current < len(self._groups) else EN
@@ -183,7 +225,9 @@ class LinuxBackend(BaseBackend):
                     if stroke is not None and lang in self._groups and stroke.code in keycodes:
                         break
                 else:
+                    self._busy()  # a character no key types: pynput remaps a spare key
                     self._out.type(ch)
+                    self._settle()
                     continue
                 group = self._groups.index(lang)
                 if group != current:
@@ -191,15 +235,15 @@ class LinuxBackend(BaseBackend):
                         self._x.XkbLockGroup(self._display, XkbUseCoreKbd, group)
                         self._x.XSync(self._display, 0)
                     current = group
+                self._expect(([("shift", None)] if stroke.shift else []) + [("char", stroke.code)])
                 self._tap(keycodes[stroke.code], stroke.shift)
                 if self.delay:
                     time.sleep(self.delay)
+        finally:
             if current != start:
                 with self._xlock:
                     self._x.XkbLockGroup(self._display, XkbUseCoreKbd, start)
                     self._x.XSync(self._display, 0)
-        finally:
-            self._settle()
 
     def caps_lock_on(self) -> bool | None:
         return bool(self._state().locked_mods & LockMask)

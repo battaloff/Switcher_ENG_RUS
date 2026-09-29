@@ -17,6 +17,7 @@ import math
 import pickle
 import re
 from array import array
+from itertools import accumulate
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -84,6 +85,40 @@ class Lexicon:
     def __contains__(self, word: str) -> bool:
         return self.zipf(word) is not None
 
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state.pop("_cum", None)  # rebuilt on first use
+        return state
+
+    def _bound(self, key: bytes, upper: bool) -> int:
+        """First index whose word is >= key (upper: whose first len(key) bytes are > key)."""
+        n = len(key)
+        lo, hi = 0, len(self._offsets)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            word = self._word_at(mid)
+            if (word[:n] <= key) if upper else (word < key):
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    def prefix_zipf(self, prefix: str) -> float | None:
+        """Zipf frequency of all words starting with ``prefix`` together ("при" ≈ 7, "ghb" → None)."""
+        try:
+            key = prefix.encode(self._enc)
+        except UnicodeEncodeError:
+            return None
+        lo, hi = self._bound(key, False), self._bound(key, True)
+        if lo >= hi:
+            return None
+        cum = self.__dict__.get("_cum")
+        if cum is None:
+            per_byte = [10 ** (b / _ZIPF_SCALE) for b in range(256)]
+            cum = self._cum = array("d", accumulate((per_byte[b] for b in self._zipf), initial=0.0))
+        mass = cum[hi] - cum[lo]
+        return math.log10(mass) if mass > 0 else None
+
 
 class CharNgram:
     """Character n-gram model with precomputed Witten-Bell log10 tables.
@@ -149,12 +184,12 @@ class CharNgram:
         model.mean_logprob = sum(per_symbol) / len(per_symbol)
         return model
 
-    def logprob(self, word: str) -> float:
-        """log10 P(word) including the end-of-word symbol."""
+    def logprob(self, word: str, complete: bool = True) -> float:
+        """log10 P(word), including the end-of-word symbol unless ``complete`` is False (a prefix)."""
         V = len(self.symbols)
         history = self.BOS * (self.order - 1)
         total = 0.0
-        for ch in word + self.EOS:
+        for ch in (word + self.EOS if complete else word):
             ctx = history
             while ctx not in self._ctx:
                 ctx = ctx[1:]
@@ -181,6 +216,10 @@ class LanguageModel:
         lands around -1, real but unknown words stay near 0.
         """
         return self.ngram.logprob(word) / (len(word) + 1) - self.ngram.mean_logprob
+
+    def prefix_plausibility(self, prefix: str) -> float:
+        """Like :meth:`plausibility` for the first letters of a word still being typed."""
+        return self.ngram.logprob(prefix, complete=False) / max(1, len(prefix)) - self.ngram.mean_logprob
 
 
 class Models:

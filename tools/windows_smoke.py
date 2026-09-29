@@ -192,6 +192,19 @@ def main() -> int:
 
     clear()
     layout(EN)
+    type_keys("ghbd")
+    check("switched after the first letters, like Punto", "прив")
+    results.append(app.backend.current_layout() == RU)
+    type_keys("tn ")
+    check("the rest of the word came out in Russian", "привет ")
+
+    clear()
+    layout(RU)
+    type_keys("ghtdtn ")  # "превет" on the Russian layout
+    check("typo fixed when the word ends", "привет ")
+
+    clear()
+    layout(EN)
     type_keys("ghbdtn ")
     for _ in range(2):
         tap(Key.shift)

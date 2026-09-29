@@ -246,6 +246,15 @@ def test_auto_update_setting_is_saved(window):
     assert window.app.saved[-1].updates.check_automatically is False
 
 
+def test_early_switch_and_autocorrect_can_be_turned_off(window):
+    assert window.var_early.get() is True and window.var_autocorrect.get() is True
+    window.var_early.set(False)
+    window.var_autocorrect.set(False)
+    window.save()
+    saved = window.app.saved[-1]
+    assert saved.early_switch is False and saved.autocorrect is False
+
+
 def test_latest_version_is_said_plainly(window):
     window.show_releases([fake_release("0.2.0", "current"), fake_release("0.1.9", "older")])
     assert window.update_status.cget("text").startswith("У вас последняя версия ✓")

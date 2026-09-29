@@ -115,7 +115,6 @@ def main() -> int:
     install_us_ru_keymap(field.d)
     threading.Thread(target=field.loop, daemon=True).start()
 
-    from pynput.keyboard import Controller, Key
 
     from switcher.app import App
     from switcher.config import Config
@@ -131,25 +130,34 @@ def main() -> int:
     runner = threading.Thread(target=app.run, kwargs={"tray": False}, daemon=True)
     runner.start()
     time.sleep(1.0)
-    user = Controller()
+
+    from Xlib.ext import xtest
+
+    def tap(keysym: int, press: bool = True, release: bool = True):
+        """A physical key, the way hardware sends it (pynput's Controller also reports its keys to
+        listeners in the same process directly, so the hook would see them twice)."""
+        keycode = field.d.keysym_to_keycode(keysym)
+        if press:
+            xtest.fake_input(field.d, X.KeyPress, keycode)
+        if release:
+            xtest.fake_input(field.d, X.KeyRelease, keycode)
+        field.d.sync()
 
     def type_keys(physical: str):
         for ch in physical:
             if ch == " ":
-                user.press(Key.space)
-                user.release(Key.space)
+                tap(XK.XK_space)
             elif ch == "\b":
-                user.press(Key.backspace)
-                user.release(Key.backspace)
+                tap(XK.XK_BackSpace)
             else:
-                # press the physical key; the active XKB group decides the letter
-                keycode = field.d.keysym_to_keycode(ord(ch))
-                from Xlib.ext import xtest
-
-                xtest.fake_input(field.d, X.KeyPress, keycode)
-                xtest.fake_input(field.d, X.KeyRelease, keycode)
-                field.d.sync()
+                tap(ord(ch))  # the active XKB group decides the letter
             time.sleep(0.08)
+        time.sleep(0.6)
+
+    def double_shift():
+        for _ in range(2):
+            tap(XK.XK_Shift_L)
+            time.sleep(0.05)
         time.sleep(0.6)
 
     results = []
@@ -172,16 +180,27 @@ def main() -> int:
     time.sleep(0.2)
     type_keys("hello ")
     check("EN-слово на RU-раскладке", "hello ")
+    # like Punto: the layout switches after the first letters, the rest is typed in Russian
+    type_keys("\b" * 6)
+    app.backend.set_layout(EN)
+    time.sleep(0.2)
+    type_keys("ghbd")
+    check("переключилось после первых букв", "прив")
+    results.append(app.backend.current_layout() == RU)
+    type_keys("tn ")
+    check("остаток слова уже по-русски", "привет ")
+    # a typo is fixed when the word ends
+    type_keys("\b" * 7)
+    type_keys("ghtdtn ")  # "превет" on the Russian layout
+    check("опечатка исправлена", "привет ")
+    type_keys("\b" * 7)
+    type_keys("hello ")  # back to where the next check starts
     # undo with double Shift
     type_keys("\b" * 6)
     app.backend.set_layout(EN)
     time.sleep(0.2)
     type_keys("ghbdtn ")
-    for _ in range(2):
-        user.press(Key.shift)
-        user.release(Key.shift)
-        time.sleep(0.05)
-    time.sleep(0.6)
+    double_shift()
     check("отмена двойным Shift", "ghbdtn ")
     rule = app.profile.layout_rule("ghbdtn", app.backend.active_app())
     print(f"{'OK ' if rule else 'FAIL'} выучено правило: {rule}")

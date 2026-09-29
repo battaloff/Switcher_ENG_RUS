@@ -460,10 +460,18 @@ class SettingsWindow(ctk.CTkToplevel):
         self.var_look_back = tk.BooleanVar(value=c.look_back)
         self.var_enter = tk.BooleanVar(value=c.convert_on_enter)
         self.var_caps = tk.BooleanVar(value=c.fix_caps_lock)
+        self.var_early = tk.BooleanVar(value=c.early_switch)
+        self.var_autocorrect = tk.BooleanVar(value=c.autocorrect)
 
         card = self._card(page, "Автоисправление")
         self._switch_row(card, self.var_enabled, "Исправлять раскладку автоматически",
                          "Слово, набранное не в той раскладке, исправится на пробеле: «ghbdtn» → «привет»")
+        self._switch_row(card, self.var_early, "Угадывать раскладку по первым буквам",
+                         "Как Punto: после 3–4 букв раскладка переключится, и остаток слова наберётся уже "
+                         "правильно. Если слово окажется другим, Switcher вернёт как было")
+        self._switch_row(card, self.var_autocorrect, "Исправлять опечатки",
+                         "«превет» → «привет», «teh» → «the». Двойной Shift отменит исправление, и это слово "
+                         "больше не тронется")
         self._switch_row(card, self.var_look_back, "Исправлять и короткое слово перед ним",
                          "«e vtyz» → «у меня»: короткие слова понятны только вместе со следующим")
         self._switch_row(card, self.var_caps, "Исправлять случайный Caps Lock",
@@ -945,6 +953,8 @@ class SettingsWindow(ctk.CTkToplevel):
         new.look_back = self.var_look_back.get()
         new.convert_on_enter = self.var_enter.get()
         new.fix_caps_lock = self.var_caps.get()
+        new.early_switch = self.var_early.get()
+        new.autocorrect = self.var_autocorrect.get()
         new.threshold = round(float(self.var_threshold.get()), 1)
         for name, spec in self.hotkey_specs.items():
             spec = spec.strip()

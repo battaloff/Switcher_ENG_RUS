@@ -85,12 +85,16 @@ class BaseBackend:
         from pynput import mouse
 
         self._sink = sink
-        kl = self._pk.Listener(on_press=self._on_press, on_release=self._on_release)
+        kl = self._pk.Listener(on_press=self._on_press, on_release=self._on_release, **self._listener_options())
         ml = mouse.Listener(on_click=self._on_click)
         for listener in (kl, ml):
             listener.daemon = True
             listener.start()
         self._listeners = [kl, ml]
+
+    def _listener_options(self) -> dict:
+        """Platform-specific pynput listener options (e.g. an event filter)."""
+        return {}
 
     def stop(self) -> None:
         for listener in self._listeners:

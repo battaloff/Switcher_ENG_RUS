@@ -155,6 +155,12 @@ class Learner:
         self.profile.log_event("prefix_fix", app=app, typed_lang=typed_lang, final_lang=target_lang,
                                typed_text=typed_text)
 
+    def early_reverted(self, *, app: str, typed_text: str, typed_lang: str, shown_text: str) -> None:
+        """An early switch turned out wrong once the word was complete, and was taken back."""
+        if self.config.enabled:
+            self.profile.log_event("early_revert", app=app, typed_lang=typed_lang, final_lang=typed_lang,
+                                   typed_text=typed_text, final_text=typed_text, detail={"was": shown_text})
+
     def typo_fix(self, *, app: str, wrong: str, right: str, lang: str) -> bool:
         """The user replaced a finished word with a close variant. Returns True if a rule was made."""
         if not (self.config.enabled and self.config.typo_rules):
@@ -175,6 +181,20 @@ class Learner:
                                          note="вы несколько раз исправляли это вручную") is not None
         self._feedback()
         return made
+
+    def spelling_fixed(self, *, app: str, wrong: str, right: str, lang: str) -> None:
+        if self.config.enabled:
+            self.profile.log_event("spell", app=app, typed_lang=lang, final_lang=lang, typed_text=wrong,
+                                   final_text=right)
+
+    def spelling_undone(self, *, app: str, wrong: str, right: str, lang: str) -> None:
+        """The user wants the word as they typed it: it becomes one of their words, never corrected again."""
+        if not self.config.enabled:
+            return
+        self.profile.log_event("spell_undo", app=app, typed_lang=lang, final_lang=lang, typed_text=wrong,
+                               final_text=wrong, detail={"was": right})
+        self.profile.bump_vocab(lang, wrong.lower(), self.profile.min_vocab_count)
+        self._feedback()
 
     def replace_applied(self, *, app: str, wrong: str, right: str) -> None:
         self.profile.rule_used("replace", wrong.lower(), app)

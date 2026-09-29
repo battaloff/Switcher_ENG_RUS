@@ -50,6 +50,8 @@ class Config:
     look_back: bool = True             # also fix the previous short word ("e vtyz" → "у меня")
     convert_on_enter: bool = False     # Enter may already have sent the message in chats
     fix_caps_lock: bool = True         # "пРИВЕТ" → "Привет"
+    early_switch: bool = True          # like Punto: switch after the first 3-4 letters, not at the end
+    autocorrect: bool = True           # fix typos at the end of a word: "превет" → "привет"
     ru_variant: str = "auto"           # "pc" | "mac" | "auto"
     typing_delay_ms: float = 2.0
     excluded_apps: list[str] = field(default_factory=lambda: [
