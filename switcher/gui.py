@@ -209,8 +209,8 @@ class SettingsWindow(tk.Toplevel):
         grid.pack(fill="x", padx=10, pady=4)
         ttk.Label(grid, text="Модель:").grid(row=0, column=0, sticky="w", pady=3)
         self.var_model = tk.StringVar(value=c.model)
-        ttk.Combobox(grid, textvariable=self.var_model, values=MODELS, width=24).grid(row=0, column=1, sticky="w",
-                                                                                    padx=6)
+        ttk.Combobox(grid, textvariable=self.var_model, values=MODELS, width=24).grid(
+            row=0, column=1, columnspan=2, sticky="w", padx=6)
         ttk.Label(grid, text="Разбирать мои исправления каждые").grid(row=1, column=0, sticky="w", pady=3)
         self.var_every = tk.IntVar(value=c.review_every)
         ttk.Spinbox(grid, from_=0, to=500, textvariable=self.var_every, width=6).grid(row=1, column=1, sticky="w",

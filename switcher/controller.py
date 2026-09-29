@@ -681,6 +681,6 @@ def parse_hotkey(spec: str):
             mods.add(name)
         else:
             target = name
-    if target is None:
+    if not target:
         return None
     return frozenset(mods), target
