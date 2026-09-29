@@ -53,6 +53,7 @@ class Tuning:
     early_margin: tuple[float, ...] = (4.5, 3.0, 2.5)
     early_plaus_max: float = -0.5
     early_context: float = 0.5      # margin shift from the language of the phrase so far
+    early_manual_extra: float = 1.5  # the user picked the layout by hand a moment ago: need more proof
 
 
 # Single letters that are words on their own; corpora are full of the others
@@ -367,8 +368,8 @@ def decide_prefix(engine: "Engine", strokes: Sequence[Stroke], typed_lang: str,
     if n < t.early_min_letters:
         result.reason = "short"
         return result
-    if ctx.manual_switch or ctx.extra_threshold > 0:
-        result.reason = "manual-switch" if ctx.manual_switch else "careful-app"
+    if ctx.extra_threshold > 0:
+        result.reason = "careful-app"
         return result
     typed = engine.keyboard.text(strokes, typed_lang)
     alt = engine.keyboard.text(strokes, alt_lang)
@@ -388,6 +389,8 @@ def decide_prefix(engine: "Engine", strokes: Sequence[Stroke], typed_lang: str,
     if previous:
         shift = t.early_context * (sum(1 for l in previous if l == typed_lang)
                                    - sum(1 for l in previous if l == alt_lang)) / len(previous)
+    if ctx.manual_switch:
+        shift += t.early_manual_extra
     typed_zipf = result.typed_zipf if result.typed_zipf is not None else -1.0
     alt_zipf = result.alt_zipf if result.alt_zipf is not None else -1.0
     if alt_zipf < _by_length(t.early_alt_min, n, first) + shift:

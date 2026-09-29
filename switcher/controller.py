@@ -243,20 +243,29 @@ class Controller:
             self._maybe_switch_early()
 
     def _maybe_switch_early(self) -> None:
-        """Punto-style: switch as soon as the first letters show the layout is wrong."""
+        """Punto-style: switch as soon as the first letters show the layout is wrong.
+
+        Not while the user retypes the keys of a word they just erased: that is a deliberate correction.
+        """
         cur = self.cur
         if (cur is None or not (self.config.early_switch and self.enabled and self.config.auto_switch)
                 or cur.mixed or cur.manual_from is not None or cur.early_from is not None or cur.early_undone
-                or cur.reopened_from is not None or cur.prefix_hint is not None or self._excluded()
+                or cur.reopened_from is not None or cur.prefix_hint is not None or self._retyping_erased(cur)
+                or self._excluded()
                 or cur.chars[0] in "'\"`~<{"):
             return
         decision = decide_prefix(self.engine, cur.strokes, cur.typed_lang, self._context(self.history))
-        if not decision.switch:
-            return
-        self._switch_layout(decision.target_lang)
-        self._rewrite(len(cur.chars), decision.text)
-        cur.early_from = cur.typed_lang
-        cur.chars, cur.typed_lang = list(decision.text), decision.target_lang
+        if decision.switch:
+            self._switch_layout(decision.target_lang)
+            self._rewrite(len(cur.chars), decision.text)
+            cur.early_from = cur.typed_lang
+            cur.chars, cur.typed_lang = list(decision.text), decision.target_lang
+
+    def _retyping_erased(self, cur: Token) -> bool:
+        """The user erased a finished word and is typing the same keys again."""
+        old = self.erased
+        old_strokes = self.keyboard.strokes(old.text, old.lang) if old is not None and old.lang in (EN, RU) else None
+        return bool(old_strokes) and canonical_keys(old_strokes).startswith(canonical_keys(cur.strokes))
 
     def _on_backspace(self) -> None:
         self._generation += 1

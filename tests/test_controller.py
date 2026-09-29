@@ -353,9 +353,16 @@ def test_no_early_switch_where_it_is_off_or_risky(make_screen):
     s.write("да ", RU)
     s.click()
     s.clock += 2  # a moment later, not the echo of our own switch
-    s.switch_layout(EN)  # the user picked the layout by hand just now
+    s.switch_layout(EN)  # the user picked the layout by hand just now: more proof needed
+    s.write("помн", RU)
+    assert s.text.endswith("gjvy")  # a borderline start waits for the whole word
+    s.write("ю ", RU)
+    assert s.text.endswith("помню ")
+    s.click()
+    s.clock += 2
+    s.switch_layout(EN)
     s.write("прив", RU)
-    assert s.text.endswith("ghbd")
+    assert s.text.endswith("прив")  # an obvious one still switches at once
 
 
 # -- autocorrect -----------------------------------------------------------------
