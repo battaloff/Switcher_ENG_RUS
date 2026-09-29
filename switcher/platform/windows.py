@@ -7,7 +7,7 @@ import os
 import time
 from ctypes import wintypes
 
-from ..layouts import EN, RU
+from ..layouts import EN, RU, Stroke
 from .base import BaseBackend
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -125,6 +125,26 @@ class WindowsBackend(BaseBackend):
                 kernel32.CloseHandle(handle)
         self._app_cache = (pid, now, name)
         return name
+
+    def _describe(self, key):
+        """The char the focused window gets, from the physical key and *its* layout.
+
+        pynput translates keys with the wrong layout (it reports "hello" while
+        Notepad receives "руддщ"), so only its letter case is trusted.
+        """
+        if isinstance(key, self._pk.Key):
+            return super()._describe(key)
+        vk = getattr(key, "vk", None)
+        code = self.VK_CODES.get(vk) if vk is not None else None
+        lang = self.current_layout() if code else None
+        if lang is None:
+            return super()._describe(key)
+        real = self.keyboard.layouts[lang].char(Stroke(code, self._shift))
+        if real.isalpha():
+            hint = key.char if key.char and len(key.char) == 1 and key.char.isalpha() else None
+            upper = hint.isupper() if hint else self._shift != bool(user32.GetKeyState(VK_CAPITAL) & 1)
+            real = real.upper() if upper else real.lower()
+        return "char", real, code
 
     def type_text(self, text: str) -> None:
         """Type as Unicode characters, never as virtual keys.

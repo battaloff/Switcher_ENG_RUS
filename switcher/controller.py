@@ -361,6 +361,7 @@ class Controller:
                 break
             ctx = self._context(self.history[:index])
             ctx.next_lang = target
+            ctx.manual_switch = False  # the next word already proved the layout wrong
             d = self.engine.decide(prev.strokes, prev.typed_lang, ctx, typed_text=prev.text)
             if d.action != "convert" or d.target_lang != target:
                 break

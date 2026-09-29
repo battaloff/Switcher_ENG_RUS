@@ -42,6 +42,15 @@ def test_look_back_fixes_the_short_word_before(make_screen):
     assert s.text == "а в итоге "
 
 
+def test_look_back_after_a_manual_layout_switch(make_screen):
+    s = make_screen(layout=RU)
+    s.write("да ", RU)
+    s.click()
+    s.switch_layout(EN)  # the user picks the wrong layout by hand
+    s.write("у меня ", RU)
+    assert s.text == "да у меня "
+
+
 def test_undo_with_double_shift_and_learning(make_screen, profile):
     s = make_screen(layout=EN)
     s.write("ghbdtn ", EN)  # the user really means "ghbdtn"
