@@ -6,7 +6,6 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime
 
 from .config import load_config
 from .layouts import EN, RU, Keyboard, canonical_keys, text_lang
@@ -84,45 +83,10 @@ def cmd_convert(args, config) -> int:
 
 
 def cmd_stats(args, config) -> int:
-    from .ai import rule_word
+    from .report import stats_text
 
-    profile = _profile(config)
-    kb = _keyboard(config)
-    stats = profile.app_stats()
-    rules = profile.rules()
-    counts: dict[str, int] = {}
-    for event in profile.events(limit=100_000):
-        counts[event["kind"]] = counts.get(event["kind"], 0) + 1
     print(f"Профиль: {profile_path()}")
-    print(f"Правил: {len(rules)} (раскладка: {sum(r.kind == 'layout' for r in rules)}, "
-          f"опечатки: {sum(r.kind == 'replace' for r in rules)})")
-    labels = {"auto": "автоисправлений", "undo": "отмен", "manual": "ручных исправлений",
-              "prefix_fix": "перенаборов в начале слова", "typo_fix": "исправленных опечаток",
-              "replace": "заменено опечаток", "ai_review": "разборов ИИ"}
-    print("События: " + ", ".join(f"{labels[k]} {counts.get(k, 0)}" for k in labels))
-    if stats:
-        print("\nЯзык по приложениям:")
-        for app, langs in sorted(stats.items(), key=lambda kv: -sum(kv[1].values()))[:12]:
-            total = sum(langs.values())
-            share = langs.get(RU, 0) / total if total else 0
-            print(f"  {app or '(неизвестно)':<24} слов {total:>6}   RU {share:>4.0%}   EN {1 - share:>4.0%}")
-    vocab = profile.vocab(limit=20)
-    if vocab:
-        print("\nВаши слова: " + ", ".join(f"{w} ({c})" for _, w, c in vocab))
-    mistakes = profile.events(["undo", "manual"], limit=15)
-    if mistakes:
-        print("\nПоследние исправления:")
-        for e in mistakes:
-            when = datetime.fromtimestamp(e["ts"]).strftime("%d.%m %H:%M")
-            arrow = "оставить" if e["kind"] == "undo" else "переключить"
-            print(f"  {when} [{e['app'] or '?'}] {e['typed_text']!r} → {arrow} {e['final_text']!r}")
-    style = profile.get_meta("style_summary")
-    if style:
-        print(f"\nВаш стиль (по мнению Claude):\n  {style}")
-    if rules and args.verbose:
-        print()
-        for r in rules:
-            print(f"  {r.kind:<7} {rule_word(r, kb)!r:<20} → {r.value:<10} {r.app or '*':<12} {r.source}")
+    print(stats_text(_profile(config), verbose=args.verbose, keyboard=_keyboard(config)))
     return 0
 
 
@@ -245,12 +209,16 @@ def cmd_doctor(args, config) -> int:
     elif not Assistant.available():
         print("• пакет anthropic не установлен — ИИ-функции недоступны")
     else:
-        import os
-
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+        has_key = Assistant(config.ai).has_credentials()
         print(f"{'✓' if has_key else '•'} Claude ({config.ai.model}): "
-              f"{'ключ найден' if has_key else 'задайте ANTHROPIC_API_KEY или выполните `ant auth login`'}")
+              f"{'ключ найден' if has_key else 'вставьте ключ в настройках или задайте ANTHROPIC_API_KEY'}")
     return 0 if ok else 1
+
+
+def cmd_gui(args, config) -> int:
+    from .gui_main import main as gui_main
+
+    return gui_main([])
 
 
 def cmd_autostart(args, config) -> int:
@@ -273,6 +241,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--debug", action="store_true", help="подробный лог")
     p.add_argument("--no-tray", action="store_true", help="без значка в трее")
     p.set_defaults(func=cmd_run)
+
+    sub.add_parser("gui", help="запустить с окном настроек и значком в трее (как Switcher.exe)").set_defaults(
+        func=cmd_gui)
 
     sub.add_parser("prepare", help="построить языковые модели заранее").set_defaults(func=cmd_prepare)
 

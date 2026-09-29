@@ -7,6 +7,7 @@ it, which app is in front.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Callable
@@ -47,6 +48,11 @@ class BaseBackend:
         self._busy_until = 0.0
         self._restore_clipboard: str | None = None
         self.notifier: Callable[[str], None] | None = None
+        # Automated end-to-end checks type with SendInput, which Windows flags as
+        # injected; this makes the backend treat such input as the user's.
+        self.accept_injected = os.environ.get("SWITCHER_ACCEPT_INJECTED") == "1"
+        if self.accept_injected:
+            self.ECHO_GRACE = max(self.ECHO_GRACE, 0.3)
 
     # -- OS hooks (override) -------------------------------------------------
 
@@ -126,7 +132,7 @@ class BaseBackend:
 
     def _on_press(self, key, injected: bool = False) -> None:
         try:
-            if injected or self._is_echo():
+            if (injected and not self.accept_injected) or self._is_echo():
                 return
             name, char, code = self._describe(key)
             self._emit("press", name, char, code)
@@ -135,7 +141,7 @@ class BaseBackend:
 
     def _on_release(self, key, injected: bool = False) -> None:
         try:
-            if injected:
+            if injected and not self.accept_injected:
                 return
             # Modifier releases always pass: a lost release would leave Ctrl "held" forever.
             if isinstance(key, self._pk.Key) and _MODIFIER_NAMES.get(key.name):
@@ -215,7 +221,7 @@ class BaseBackend:
             saved = pyperclip.paste()
         except pyperclip.PyperclipException:
             saved = None
-        marker = f"⁣switcher-{time.time()}"
+        marker = f"switcher-clipboard-probe-{time.time()}"
         try:
             pyperclip.copy(marker)
             self._shortcut(self.COPY_SHORTCUT)
