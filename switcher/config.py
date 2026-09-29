@@ -28,7 +28,8 @@ class Learning:
 
 @dataclass
 class AI:
-    enabled: bool = True               # needs ANTHROPIC_API_KEY (or `ant auth login`)
+    enabled: bool = True
+    api_key: str = ""                  # set from the settings window (encrypted); else ANTHROPIC_API_KEY
     model: str = "claude-opus-5-5"
     review_every: int = 20             # corrections between automatic profile reviews (0 = only manual)
     fix_typos: bool = False            # let the AI phrase fix also correct spelling
