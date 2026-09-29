@@ -281,6 +281,8 @@ class Controller:
 
     def _excluded(self) -> bool:
         app = self.app.lower()
+        if app == "switcher":  # our own settings window: API keys must stay as typed
+            return True
         return any(name in app for name in self.config.excluded_apps)
 
     def _commit(self, delim: str, allow_change: bool = True) -> Token:

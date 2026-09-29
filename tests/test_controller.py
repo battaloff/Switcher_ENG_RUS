@@ -221,3 +221,9 @@ def test_ai_fix_rewrites_the_phrase_and_learns(make_screen, profile):
     pieces = ai.calls[0]
     assert pieces[1] == {"screen": "pfgeibk", "en": "pfgeibk", "ru": "запушил", "delim": " "}
     assert profile.layout_rule("pfgeibk", "notes")[0] == RU
+
+
+def test_own_window_is_left_alone(make_screen):
+    s = make_screen(layout=EN, app="Switcher")
+    s.write("ghbdtn ", EN)
+    assert s.text == "ghbdtn "

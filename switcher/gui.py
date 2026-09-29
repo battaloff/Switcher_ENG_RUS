@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import logging
 import queue
+import sys
 import threading
 import tkinter as tk
 import webbrowser
@@ -35,6 +36,7 @@ class Ui:
         self.root.withdraw()
         self.root.title("Switcher")
         _set_icon(self.root)
+        install_clipboard_support(self.root)
         self._calls: queue.Queue = queue.Queue()
         self.window: SettingsWindow | None = None
 
@@ -70,6 +72,61 @@ class Ui:
             return
         self.window = SettingsWindow(self, welcome=welcome)
         self.window.show(tab or ("ai" if welcome else None))
+
+
+# Physical keys of Ctrl+V/C/X/A.  Tk binds these shortcuts to the Latin letters,
+# so they die while the Russian layout is active; match the key itself instead.
+_SHORTCUT_KEYCODES = {
+    "win32": {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>", 65: "select_all"},
+    "linux": {55: "<<Paste>>", 54: "<<Copy>>", 53: "<<Cut>>", 38: "select_all"},
+}.get(sys.platform, {})
+_TEXT_CLASSES = ("Entry", "TEntry", "Text", "TCombobox", "TSpinbox", "Spinbox")
+
+
+def select_all(widget) -> None:
+    if isinstance(widget, tk.Text):
+        widget.tag_add("sel", "1.0", "end-1c")
+    else:
+        widget.select_range(0, "end")
+        widget.icursor("end")
+
+
+def ctrl_shortcut(event):
+    """Ctrl+V/C/X/A by physical key, whatever the keyboard layout."""
+    if event.keysym.lower() in ("v", "c", "x", "a"):
+        return None  # Latin layout: Tk's own bindings already handle it
+    action = _SHORTCUT_KEYCODES.get(event.keycode)
+    widget = event.widget
+    if action is None or widget.winfo_class() not in _TEXT_CLASSES:
+        return None
+    if action == "select_all":
+        select_all(widget)
+    else:
+        widget.event_generate(action)
+    return "break"
+
+
+def context_menu(event) -> None:
+    """Right-click menu for text fields (Tk has none by default)."""
+    widget = event.widget
+    if not hasattr(widget, "winfo_class") or widget.winfo_class() not in _TEXT_CLASSES:
+        return
+    widget.focus_set()
+    menu = tk.Menu(widget, tearoff=0)
+    menu.add_command(label="Вырезать", command=lambda: widget.event_generate("<<Cut>>"))
+    menu.add_command(label="Копировать", command=lambda: widget.event_generate("<<Copy>>"))
+    menu.add_command(label="Вставить", command=lambda: widget.event_generate("<<Paste>>"))
+    menu.add_separator()
+    menu.add_command(label="Выделить всё", command=lambda: select_all(widget))
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
+
+
+def install_clipboard_support(root) -> None:
+    root.bind_all("<Control-KeyPress>", ctrl_shortcut, add="+")
+    root.bind_all("<Button-3>", context_menu, add="+")
 
 
 def _set_icon(window) -> None:
@@ -196,6 +253,7 @@ class SettingsWindow(tk.Toplevel):
         self.key_entry.pack(side="left", padx=6, fill="x", expand=True)
         self.key_entry.bind("<FocusIn>", self._clear_placeholder)
         self.key_entry.bind("<FocusOut>", self._restore_placeholder)
+        ttk.Button(key_row, text="Вставить", command=self.paste_key).pack(side="left", padx=(0, 6))
         ttk.Button(key_row, text="Проверить", command=self.check_key).pack(side="left")
         link = ttk.Label(frame, text="Где взять ключ: console.anthropic.com → API Keys", foreground="#2563eb",
                          cursor="hand2")
@@ -276,6 +334,17 @@ class SettingsWindow(tk.Toplevel):
     def _clear_placeholder(self, _event=None) -> None:
         if self.var_key.get() == KEY_PLACEHOLDER:
             self.var_key.set("")
+
+    def paste_key(self) -> None:
+        try:
+            text = self.clipboard_get().strip()
+        except tk.TclError:
+            text = ""
+        if not text:
+            self.key_status.config(text="В буфере обмена пусто: сначала скопируйте ключ.")
+            return
+        self.var_key.set(text)
+        self.key_status.config(text="Ключ вставлен. Нажмите «Проверить», затем «Сохранить».")
 
     def _restore_placeholder(self, _event=None) -> None:
         if not self.var_key.get().strip() and self.config_copy.ai.api_key:

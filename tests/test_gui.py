@@ -80,3 +80,26 @@ def test_rules_and_stats_tabs(window, profile):
     assert profile.rules() == []
     window.show("stats")
     assert "Правил: 0" in window.stats.get("1.0", "end")
+
+
+def test_paste_button_takes_the_key_from_the_clipboard(window):
+    window.clipboard_clear()
+    window.clipboard_append("  sk-ant-from-clipboard\n")
+    window.paste_key()
+    assert window.var_key.get() == "sk-ant-from-clipboard"
+
+
+@pytest.mark.skipif(not gui._SHORTCUT_KEYCODES, reason="no keycode table for this platform")
+def test_ctrl_v_works_with_the_russian_layout(window):
+    from types import SimpleNamespace
+
+    window.clipboard_clear()
+    window.clipboard_append("sk-ant-ru-layout")
+    window.var_key.set("")
+    paste_code = next(code for code, action in gui._SHORTCUT_KEYCODES.items() if action == "<<Paste>>")
+    event = SimpleNamespace(keysym="Cyrillic_em", keycode=paste_code, widget=window.key_entry)
+    assert gui.ctrl_shortcut(event) == "break"
+    window.update()
+    assert window.var_key.get() == "sk-ant-ru-layout"
+    # with the Latin layout Tk's own binding does the job
+    assert gui.ctrl_shortcut(SimpleNamespace(keysym="v", keycode=paste_code, widget=window.key_entry)) is None
