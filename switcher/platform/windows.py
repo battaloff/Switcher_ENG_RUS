@@ -126,6 +126,37 @@ class WindowsBackend(BaseBackend):
         self._app_cache = (pid, now, name)
         return name
 
+    def type_text(self, text: str) -> None:
+        """Type as Unicode characters, never as virtual keys.
+
+        pynput sends plain Latin letters as virtual keys, which the target app
+        translates with *its* layout — and our layout switch may not have
+        reached it yet, turning "hello" into "руддщ".  Unicode input does not
+        depend on the layout.
+        """
+        from pynput._util.win32 import INPUT, INPUT_union, KEYBDINPUT, SendInput
+
+        self._busy()
+        try:
+            for ch in text:
+                if ch in "\n\t":
+                    key = self._pk.Key.enter if ch == "\n" else self._pk.Key.tab
+                    self._out.press(key)
+                    self._out.release(key)
+                else:
+                    encoded = ch.encode("utf-16-le")
+                    units = [int.from_bytes(encoded[i:i + 2], "little") for i in range(0, len(encoded), 2)]
+                    events = [
+                        INPUT(type=INPUT.KEYBOARD, value=INPUT_union(ki=KEYBDINPUT(
+                            wVk=0, wScan=unit, dwFlags=KEYBDINPUT.UNICODE | flags)))
+                        for flags in (0, KEYBDINPUT.KEYUP) for unit in units
+                    ]
+                    SendInput(len(events), ctypes.byref((INPUT * len(events))(*events)), ctypes.sizeof(INPUT))
+                if self.delay:
+                    time.sleep(self.delay)
+        finally:
+            self._settle()
+
     def caps_lock_on(self) -> bool | None:
         return bool(user32.GetKeyState(VK_CAPITAL) & 1)
 

@@ -234,27 +234,53 @@ class Models:
         return cls(data["models"])
 
 
+BUNDLED_NAME = "langmodel.pickle"
+
+
 def default_models_path() -> Path:
     from .paths import cache_dir
 
     return cache_dir() / f"langmodel-v{MODEL_VERSION}.pickle"
 
 
+def bundled_models_path() -> Path | None:
+    """The prebuilt model shipped inside the Windows installer, if any."""
+    import os
+    import sys
+
+    override = os.environ.get("SWITCHER_MODELS")
+    if override and Path(override).exists():
+        return Path(override)
+    roots = [getattr(sys, "_MEIPASS", None)]
+    if getattr(sys, "frozen", False):
+        roots.append(str(Path(sys.executable).parent))
+    for root in roots:
+        if root and (Path(root) / BUNDLED_NAME).exists():
+            return Path(root) / BUNDLED_NAME
+    return None
+
+
 _cached: Models | None = None
 
 
 def load_models(path: Path | None = None, *, build_if_missing: bool = True) -> Models:
-    """Load the cached models, building them on first run (takes ~20 s)."""
+    """Load the models: the bundled copy, else the cache, else build them (~20 s, needs wordfreq)."""
     global _cached
     if _cached is not None and path is None:
         return _cached
-    path = path or default_models_path()
-    models = Models.load(path)
+    models = None
+    if path is None:
+        bundled = bundled_models_path()
+        if bundled is not None:
+            models = Models.load(bundled)
+    target = path or default_models_path()
+    if models is None:
+        models = Models.load(target)
     if models is None:
         if not build_if_missing:
-            raise FileNotFoundError(path)
+            raise FileNotFoundError(target)
         models = Models.build()
-        models.save(path)
-    if path == default_models_path():
+        models.save(target)
+    if path is None:
         _cached = models
     return models
