@@ -61,6 +61,7 @@ def build_exe(model: Path, icon: Path) -> Path:
         "--hidden-import", "pynput.mouse._win32",
         "--hidden-import", "pystray._win32",
         "--collect-submodules", "anthropic",
+        "--collect-data", "customtkinter",  # its themes and fonts are JSON/TTF files
         # the model is prebuilt, so the 50 MB corpus is not needed at runtime
         "--exclude-module", "wordfreq",
         "--exclude-module", "pytest",

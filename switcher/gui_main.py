@@ -158,7 +158,7 @@ def selftest(report: str | None = None) -> int:
         ui = Ui(state["app"])
         ui.open_settings(welcome=True)
         ui.root.update()
-        for tab in ("main", "ai", "rules", "stats"):
+        for tab in ("main", "keys", "ai", "rules", "stats"):
             ui.window.show(tab)
             ui.root.update()
         ui.root.destroy()

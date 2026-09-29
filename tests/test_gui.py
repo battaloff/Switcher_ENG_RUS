@@ -3,15 +3,17 @@ import threading
 import pytest
 
 tk = pytest.importorskip("tkinter")
+pytest.importorskip("customtkinter")
+
+from switcher import autostart, gui  # noqa: E402
+
 # One Tk interpreter for the whole module: creating many in one process is
 # flaky on Windows ("Can't find a usable init.tcl").
 try:
-    ROOT = tk.Tk()
-    ROOT.withdraw()
+    ROOT = gui.make_root()
 except tk.TclError:
     pytest.skip("no display for Tk", allow_module_level=True)
 
-from switcher import autostart, gui  # noqa: E402
 from switcher.config import Config  # noqa: E402
 from switcher.secrets import reveal  # noqa: E402
 
@@ -101,12 +103,13 @@ def test_ctrl_v_works_with_the_russian_layout(window):
     window.clipboard_append("sk-ant-ru-layout")
     window.var_key.set("")
     paste_code = next(code for code, action in gui._SHORTCUT_KEYCODES.items() if action == "<<Paste>>")
-    event = SimpleNamespace(keysym="Cyrillic_em", keycode=paste_code, widget=window.key_entry)
+    field = window.key_entry._entry  # the Tk entry inside CustomTkinter's widget gets the keys
+    event = SimpleNamespace(keysym="Cyrillic_em", keycode=paste_code, widget=field)
     assert gui.ctrl_shortcut(event) == "break"
     window.update()
     assert window.var_key.get() == "sk-ant-ru-layout"
     # with the Latin layout Tk's own binding does the job
-    assert gui.ctrl_shortcut(SimpleNamespace(keysym="v", keycode=paste_code, widget=window.key_entry)) is None
+    assert gui.ctrl_shortcut(SimpleNamespace(keysym="v", keycode=paste_code, widget=field)) is None
 
 
 def key_event(window, keysym, keycode=0, char=""):
@@ -146,3 +149,15 @@ def test_recording_refuses_typing_keys_and_duplicates(window):
     window._record_press(key_event(window, "c", 67, "c"))  # taken by "convert selection"
     assert window.hotkey_specs["toggle"] == "<ctrl>+<alt>+s"
     assert "уже назначено" in window.hotkey_hint.cget("text")
+
+
+def test_recording_goes_through_the_window_bindings(window):
+    window.show("keys")
+    window.start_recording("toggle")
+    window.update()
+    if window.focus_get() is not window:
+        pytest.skip("the test window did not get the keyboard focus")
+    window.event_generate("<KeyPress>", keysym="F7", when="now")
+    window.update()
+    assert window.hotkey_specs["toggle"] == "<f7>"
+    assert window.hotkey_labels["toggle"].cget("text") == "F7"

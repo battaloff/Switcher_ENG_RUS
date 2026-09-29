@@ -16,7 +16,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tray = ["pystray>=0.19", "pillow>=10"]
+gui = ["customtkinter>=5.2", "pystray>=0.19", "pillow>=10"]
+tray = ["switcher-ru-en[gui]"]
 dev = ["pytest>=8"]
 
 [project.scripts]

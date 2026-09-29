@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: python -m pip install -e ".[tray,dev]" pyinstaller
+        run: python -m pip install -e ".[gui,dev]" pyinstaller
 
       - name: Unit tests
         run: python -m pytest -q
@@ -45,6 +45,14 @@ jobs:
           name: SwitcherSetup
           path: dist/SwitcherSetup-*.exe
           if-no-files-found: error
+
+      - name: Settings window screenshots
+        run: python tools/gui_screenshots.py screenshots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/*.png
 
       - name: Typing into Notepad (end-to-end)
         shell: pwsh

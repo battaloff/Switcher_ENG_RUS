@@ -51,7 +51,7 @@ Python и командная строка не нужны: всё настраи
 ```bash
 git clone https://github.com/battaloff/Switcher_ENG_RUS.git
 cd Switcher_ENG_RUS
-pip install -e ".[tray]"      # [tray] — значок в трее (Windows/Linux)
+pip install -e ".[gui]"       # [gui] — окно настроек и значок в трее
 switcher prepare              # один раз: собрать языковые модели (~20 с)
 switcher run                  # или `switcher gui` — с окном настроек
 ```
