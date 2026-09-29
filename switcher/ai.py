@@ -45,6 +45,16 @@ class AIError(RuntimeError):
     pass
 
 
+WORKSPACE_HINT = ("ключ не привязан к рабочему пространству: создайте новый ключ и в поле Scope "
+                  "выберите пространство (например, Default Workspace)")
+
+
+def _status_message(exc) -> str:
+    if "anthropic-workspace-id" in str(exc):
+        return WORKSPACE_HINT
+    return f"Claude API ответил ошибкой {exc.status_code}"
+
+
 FIX_SYSTEM = """\
 You restore text typed on a keyboard with two layouts: English QWERTY and Russian ЙЦУКЕН. \
 The user sometimes forgets to switch layouts, so some words come out as gibberish in the wrong \
@@ -176,7 +186,7 @@ class Assistant:
         except anthropic.APIConnectionError:
             raise AIError("нет связи с Claude API") from None
         except anthropic.APIStatusError as exc:
-            raise AIError(f"Claude API ответил ошибкой {exc.status_code}") from None
+            raise AIError(_status_message(exc)) from None
         return getattr(model, "display_name", None) or self.config.model
 
     @staticmethod
@@ -209,7 +219,7 @@ class Assistant:
         except anthropic.RateLimitError as exc:
             raise AIError("Claude API: превышен лимит запросов, попробуйте позже") from exc
         except anthropic.APIStatusError as exc:
-            raise AIError(f"Claude API ответил ошибкой {exc.status_code}") from exc
+            raise AIError(_status_message(exc)) from exc
         except anthropic.APIConnectionError as exc:
             raise AIError("нет связи с Claude API") from exc
         if response.stop_reason == "refusal":

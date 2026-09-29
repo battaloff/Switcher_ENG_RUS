@@ -121,3 +121,19 @@ def test_review_request(profile, keyboard):
     assert proposal == reply
     assert captured[0]["body"]["output_config"]["effort"] == "medium"
     assert json.loads(captured[0]["body"]["messages"][0]["content"]) == digest
+
+
+def test_unscoped_key_gets_a_clear_message():
+    def handler(request):
+        return httpx2.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error",
+            "message": "anthropic-workspace-id is required when authenticating with an identity-linked API key; "
+                       "send the id of the workspace this request acts in."}})
+
+    client = anthropic.Anthropic(api_key="test", base_url="https://api.test", max_retries=0,
+                                 http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)))
+    assistant = Assistant(AI(), client=client)
+    with pytest.raises(AIError, match="Default Workspace"):
+        assistant.check_key()
+    with pytest.raises(AIError, match="Default Workspace"):
+        assistant.fix_phrase(PIECES)
