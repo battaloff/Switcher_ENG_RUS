@@ -25,6 +25,8 @@ from .learner import Learner, core_of, levenshtein
 log = logging.getLogger(__name__)
 
 MODIFIERS = {"shift", "ctrl", "alt", "cmd"}
+TAP_MODIFIERS = {"shift", "ctrl"}
+DOUBLE_TAPS = {f"double_{mod}" for mod in TAP_MODIFIERS}
 DELIMITERS = {"space": " ", "tab": "\t", "enter": "\n"}
 
 
@@ -96,9 +98,9 @@ class Controller:
         self.undo_target: Token | None = None
         self.manual_target: tuple[Token, str, tuple[str, str] | None, float] | None = None
         self.mods: set[str] = set()
-        self._shift_down_at = 0.0
-        self._shift_clean = False
-        self._last_shift_tap = 0.0
+        self._tap_mod: str | None = None          # modifier pressed alone, may become a tap
+        self._tap_down_at = 0.0
+        self._last_tap: tuple[str | None, float] = (None, 0.0)
         self._we_switched_at = 0.0
         self._manual_switch_at = 0.0
         self._generation = 0  # bumps on every change of the tracked text (for async AI results)
@@ -126,15 +128,15 @@ class Controller:
             return
         if ev.key in MODIFIERS:
             self.mods.add(ev.key)
-            if ev.key == "shift" and self.mods == {"shift"}:
-                self._shift_clean = True
-                self._shift_down_at = now
+            if ev.key in TAP_MODIFIERS and self.mods == {ev.key}:
+                self._tap_mod, self._tap_down_at = ev.key, now
             else:
-                self._shift_clean = False
+                self._tap_mod = None
             return
-        self._shift_clean = False
+        self._tap_mod = None
+        self._last_tap = (None, 0.0)
 
-        name = self._match_hotkey(ev)
+        name = None if self._own_window() else self._match_hotkey(ev)
         if name:
             self.run_hotkey(name)
             return
@@ -157,16 +159,26 @@ class Controller:
     def _on_release(self, ev: KeyEvent, now: float) -> None:
         if ev.key in MODIFIERS:
             self.mods.discard(ev.key)
-        if ev.key == "shift" and self._shift_clean and now - self._shift_down_at < 0.35:
-            self._shift_clean = False
-            if now - self._last_shift_tap < 0.45:
-                self._last_shift_tap = 0.0
-                if self.hotkeys.get("convert_last") == "double_shift":
-                    self.run_hotkey("convert_last")
-            else:
-                self._last_shift_tap = now
-        elif ev.key == "shift":
-            self._shift_clean = False
+        if ev.key != self._tap_mod:
+            return
+        self._tap_mod = None
+        if now - self._tap_down_at >= 0.35:
+            self._last_tap = (None, 0.0)
+            return
+        last_mod, last_at = self._last_tap
+        if last_mod == ev.key and now - last_at < 0.45:
+            self._last_tap = (None, 0.0)
+            spec = f"double_{ev.key}"
+            for name, hotkey in self.hotkeys.items():
+                if hotkey == spec and not self._own_window():
+                    self.run_hotkey(name)
+                    break
+        else:
+            self._last_tap = (ev.key, now)
+
+    def _own_window(self) -> bool:
+        """Switcher's own settings window: shortcuts are being recorded there."""
+        return self.app.lower() == "switcher"
 
     def reset(self, reason: str = "") -> None:
         self.cur = None
@@ -441,7 +453,7 @@ class Controller:
             key = found[0].code if found else ev.char.lower()
         key = key or ev.key
         for name, spec in self.hotkeys.items():
-            if spec == "double_shift" or spec is None:
+            if spec is None or isinstance(spec, str):
                 continue
             mods, target = spec
             if mods == self.mods and target in (key, ev.key):
@@ -670,9 +682,9 @@ def match_case(template: str, word: str) -> str:
 
 
 def parse_hotkey(spec: str):
-    """"<ctrl>+<alt>+x" -> ({"ctrl", "alt"}, "x"); "double_shift" stays as is."""
+    """"<ctrl>+<alt>+x" -> ({"ctrl", "alt"}, "x"); "double_shift" / "double_ctrl" stay as is."""
     spec = spec.strip().lower()
-    if spec == "double_shift":
+    if spec in DOUBLE_TAPS:
         return spec
     mods: set[str] = set()
     target = None

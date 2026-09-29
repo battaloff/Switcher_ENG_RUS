@@ -11,6 +11,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, simpledialog, ttk
@@ -18,6 +19,8 @@ from tkinter import messagebox, simpledialog, ttk
 from . import autostart
 from .controller import parse_hotkey
 from .engine import split_core
+from .hotkeys import MODIFIER_KEYSYMS, build_spec as build_hotkey, format_hotkey, key_name as hotkey_key_name
+from .hotkeys import problem as hotkey_problem
 from .layouts import EN, RU, canonical_keys, text_lang
 from .paths import data_dir
 from .report import rule_rows, stats_text
@@ -25,6 +28,12 @@ from .report import rule_rows, stats_text
 log = logging.getLogger(__name__)
 
 MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]
+HOTKEY_ACTIONS = (
+    ("convert_last", "Исправить / отменить последнее слово"),
+    ("convert_selection", "Перевести выделенный текст"),
+    ("ai_fix", "Исправить фразу с Claude"),
+    ("toggle", "Пауза"),
+)
 KEY_PLACEHOLDER = "••••••••••••••••"
 PAD = {"padx": 10, "pady": 4}
 
@@ -221,19 +230,28 @@ class SettingsWindow(tk.Toplevel):
 
         keys = ttk.LabelFrame(frame, text="Горячие клавиши")
         keys.pack(fill="x", padx=10, pady=8)
-        self.var_hotkeys = {}
-        for row, (name, label) in enumerate((
-            ("convert_last", "Исправить / отменить последнее слово"),
-            ("convert_selection", "Перевести выделенный текст"),
-            ("ai_fix", "Исправить фразу с Claude"),
-            ("toggle", "Пауза"),
-        )):
-            var = tk.StringVar(value=getattr(c.hotkeys, name))
-            self.var_hotkeys[name] = var
+        self.hotkey_specs: dict[str, str] = {}
+        self.hotkey_labels: dict[str, ttk.Label] = {}
+        self._recording: str | None = None
+        for row, (name, label) in enumerate(HOTKEY_ACTIONS):
+            self.hotkey_specs[name] = getattr(c.hotkeys, name)
             ttk.Label(keys, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=2)
-            ttk.Entry(keys, textvariable=var, width=26).grid(row=row, column=1, sticky="w", padx=6, pady=2)
-        ttk.Label(keys, foreground="#666", text="double_shift — двойное нажатие Shift; сочетания: <ctrl>+<alt>+x"
-                  ).grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 6))
+            shown = ttk.Label(keys, text=format_hotkey(self.hotkey_specs[name]), width=24, relief="solid",
+                              padding=(6, 2), takefocus=True)
+            shown.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+            shown.bind("<KeyPress>", self._record_press)
+            shown.bind("<KeyRelease>", self._record_release)
+            shown.bind("<FocusOut>", lambda _e, n=name: self._stop_recording(n))
+            shown.bind("<Button-1>", lambda _e, n=name: self.start_recording(n))
+            self.hotkey_labels[name] = shown
+            ttk.Button(keys, text="Изменить", command=lambda n=name: self.start_recording(n)).grid(
+                row=row, column=2, padx=(0, 4), pady=2)
+            ttk.Button(keys, text="✕", width=3, command=lambda n=name: self.set_hotkey(n, "")).grid(
+                row=row, column=3, pady=2)
+        self.hotkey_hint = ttk.Label(keys, foreground="#666", wraplength=560, justify="left", text=(
+            "Нажмите «Изменить» и затем нужные клавиши: Ctrl/Alt + клавиша, Shift или Ctrl дважды, "
+            "Pause, F1–F12. Esc — отмена, ✕ — отключить."))
+        self.hotkey_hint.grid(row=len(HOTKEY_ACTIONS), column=0, columnspan=4, sticky="w", padx=6, pady=(2, 6))
 
         ttk.Label(frame, text="Не работать в программах (через запятую, часть имени процесса):").pack(
             anchor="w", padx=10, pady=(8, 0))
@@ -338,6 +356,81 @@ class SettingsWindow(tk.Toplevel):
         if self.var_key.get() == KEY_PLACEHOLDER:
             self.var_key.set("")
 
+    # -- hotkey recording ------------------------------------------------------
+
+    def start_recording(self, name: str) -> None:
+        if self._recording and self._recording != name:
+            self._stop_recording(self._recording)
+        self._recording = name
+        self._rec_mods: set[str] = set()
+        self._rec_tap: tuple[str | None, float] = (None, 0.0)
+        self._rec_last_tap: tuple[str | None, float] = (None, 0.0)
+        self.hotkey_labels[name].config(text="Нажмите клавиши…")
+        self.hotkey_labels[name].focus_set()
+
+    def _stop_recording(self, name: str) -> None:
+        if self._recording == name:
+            self._recording = None
+            self.hotkey_labels[name].config(text=format_hotkey(self.hotkey_specs[name]))
+
+    def set_hotkey(self, name: str, spec: str) -> bool:
+        """Assign ``spec`` to ``name``; returns False (and explains why) if it cannot be used."""
+        if spec:
+            reason = hotkey_problem(spec)
+            if reason:
+                self.hotkey_hint.config(text=f"{format_hotkey(spec)}: {reason}.")
+                return False
+            for other, other_spec in self.hotkey_specs.items():
+                if other != name and other_spec.strip().lower() == spec.lower():
+                    title = dict(HOTKEY_ACTIONS)[other]
+                    self.hotkey_hint.config(text=f"{format_hotkey(spec)} уже назначено на «{title}».")
+                    return False
+        self.hotkey_specs[name] = spec
+        self._recording = None
+        self.hotkey_labels[name].config(text=format_hotkey(spec))
+        self.hotkey_hint.config(text=f"{format_hotkey(spec)} — готово. Не забудьте нажать «Сохранить»."
+                                if spec else "Отключено. Не забудьте нажать «Сохранить».")
+        return True
+
+    def _record_press(self, event):
+        name = self._recording
+        if name is None:
+            if event.keysym in ("Return", "space"):
+                self.start_recording(next(n for n, w in self.hotkey_labels.items() if w is event.widget))
+            return None
+        mod = MODIFIER_KEYSYMS.get(event.keysym)
+        if mod:
+            self._rec_mods.add(mod)
+            self._rec_tap = (mod, time.monotonic()) if self._rec_mods == {mod} else (None, 0.0)
+            return "break"
+        self._rec_tap = self._rec_last_tap = (None, 0.0)
+        if event.keysym == "Escape" and not self._rec_mods:
+            self._stop_recording(name)
+            return "break"
+        key = hotkey_key_name(event.keysym, event.keycode, event.char)
+        if key:
+            self.set_hotkey(name, build_hotkey(self._rec_mods, key))
+            self._rec_mods = set()
+        return "break"
+
+    def _record_release(self, event):
+        name = self._recording
+        mod = MODIFIER_KEYSYMS.get(event.keysym)
+        if name is None or mod is None:
+            return None
+        self._rec_mods.discard(mod)
+        tapped, pressed_at = self._rec_tap
+        self._rec_tap = (None, 0.0)
+        now = time.monotonic()
+        if tapped != mod or now - pressed_at > 0.35 or mod not in ("shift", "ctrl"):
+            return "break"
+        last, last_at = self._rec_last_tap
+        if last == mod and now - last_at < 0.6:
+            self.set_hotkey(name, f"double_{mod}")
+        else:
+            self._rec_last_tap = (mod, now)
+        return "break"
+
     def paste_key(self) -> None:
         try:
             text = self.clipboard_get().strip()
@@ -374,8 +467,8 @@ class SettingsWindow(tk.Toplevel):
         new.convert_on_enter = self.var_enter.get()
         new.fix_caps_lock = self.var_caps.get()
         new.threshold = round(float(self.var_threshold.get()), 1)
-        for name, var in self.var_hotkeys.items():
-            spec = var.get().strip()
+        for name, spec in self.hotkey_specs.items():
+            spec = spec.strip()
             if spec and parse_hotkey(spec) is None:
                 raise ValueError(f"Не понял сочетание клавиш «{spec}»")
             setattr(new.hotkeys, name, spec)

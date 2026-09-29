@@ -10,7 +10,8 @@ from typing import Any
 
 @dataclass
 class Hotkeys:
-    # "double_shift" = tap Shift twice; otherwise pynput syntax, e.g. "<ctrl>+<alt>+x".
+    # "double_shift" / "double_ctrl" = tap the key twice; otherwise pynput syntax, e.g.
+    # "<ctrl>+<alt>+x" or "<pause>"; "" = off.  The settings window records them.
     convert_last: str = "double_shift"      # convert the last word / undo the last auto-switch
     convert_selection: str = "<ctrl>+<alt>+c"
     ai_fix: str = "<ctrl>+<alt>+<space>"    # let Claude fix the current phrase or the selection

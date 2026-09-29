@@ -51,7 +51,7 @@ def test_settings_are_saved(window):
     window.var_threshold.set(3.0)
     window.var_look_back.set(False)
     window.var_key.set("sk-ant-test-key")
-    window.var_hotkeys["toggle"].set("<ctrl>+<alt>+p")
+    window.hotkey_specs["toggle"] = "<ctrl>+<alt>+p"
     window.var_excluded.set("keepass, Bitwarden ,")
     window.save()
     new = window.app.saved[-1]
@@ -68,7 +68,7 @@ def test_settings_are_saved(window):
 
 
 def test_bad_hotkey_is_rejected(window):
-    window.var_hotkeys["toggle"].set("<ctrl>+<alt>")
+    window.hotkey_specs["toggle"] = "<ctrl>+<alt>"
     window.save()
     assert window.errors and not window.app.saved
 
@@ -107,3 +107,42 @@ def test_ctrl_v_works_with_the_russian_layout(window):
     assert window.var_key.get() == "sk-ant-ru-layout"
     # with the Latin layout Tk's own binding does the job
     assert gui.ctrl_shortcut(SimpleNamespace(keysym="v", keycode=paste_code, widget=window.key_entry)) is None
+
+
+def key_event(window, keysym, keycode=0, char=""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(keysym=keysym, keycode=keycode, char=char, widget=window.hotkey_labels["toggle"])
+
+
+def test_record_a_combination(window):
+    window.start_recording("toggle")
+    window._record_press(key_event(window, "Control_L"))
+    window._record_press(key_event(window, "Alt_L"))
+    # the K key with the Russian layout active: still Ctrl+Alt+K
+    window._record_press(key_event(window, "Cyrillic_el", 75, "л"))
+    assert window.hotkey_specs["toggle"] == "<ctrl>+<alt>+k"
+    assert window.hotkey_labels["toggle"].cget("text") == "Ctrl + Alt + K"
+
+
+def test_record_double_ctrl_and_pause(window):
+    window.start_recording("toggle")
+    for _ in range(2):
+        window._record_press(key_event(window, "Control_L"))
+        window._record_release(key_event(window, "Control_L"))
+    assert window.hotkey_specs["toggle"] == "double_ctrl"
+    window.start_recording("convert_last")
+    window._record_press(key_event(window, "Pause", 19))
+    assert window.hotkey_specs["convert_last"] == "<pause>"
+
+
+def test_recording_refuses_typing_keys_and_duplicates(window):
+    window.start_recording("toggle")
+    window._record_press(key_event(window, "k", 75, "k"))
+    assert window.hotkey_specs["toggle"] == "<ctrl>+<alt>+s"
+    assert "помешает печатать" in window.hotkey_hint.cget("text")
+    window._record_press(key_event(window, "Control_L"))
+    window._record_press(key_event(window, "Alt_L"))
+    window._record_press(key_event(window, "c", 67, "c"))  # taken by "convert selection"
+    assert window.hotkey_specs["toggle"] == "<ctrl>+<alt>+s"
+    assert "уже назначено" in window.hotkey_hint.cget("text")

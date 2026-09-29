@@ -227,3 +227,32 @@ def test_own_window_is_left_alone(make_screen):
     s = make_screen(layout=EN, app="Switcher")
     s.write("ghbdtn ", EN)
     assert s.text == "ghbdtn "
+
+
+def test_any_action_can_use_double_ctrl(make_screen):
+    config = Config()
+    config.hotkeys.toggle = "double_ctrl"
+    s = make_screen(config)
+    for _ in range(2):
+        s._event("press", "ctrl")
+        s._event("release", "ctrl")
+    assert s.controller.enabled is False
+
+
+def test_single_key_hotkey_like_punto_pause(make_screen):
+    config = Config()
+    config.hotkeys.convert_last = "<pause>"
+    s = make_screen(config, layout=EN)
+    s.write("vs ", EN)
+    s._event("press", "pause")
+    assert s.text == "мы "
+
+
+def test_hotkeys_do_nothing_in_own_settings_window(make_screen):
+    config = Config()
+    config.hotkeys.toggle = "double_ctrl"
+    s = make_screen(config, app="Switcher")
+    for _ in range(2):
+        s._event("press", "ctrl")
+        s._event("release", "ctrl")
+    assert s.controller.enabled is True
