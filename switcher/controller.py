@@ -404,9 +404,9 @@ class Controller:
                 self._apply_decision(tok)
             if tok.change == "" and can_change and self.config.learning.typo_rules:
                 self._apply_replace_rule(tok)
-        if can_change and tok.change in ("", "convert"):
+        if can_change and tok.change in ("", "convert", "fix_quote"):
             self._apply_two_capitals(tok)
-        if can_change and tok.change in ("", "convert", "case"):
+        if can_change and tok.change in ("", "convert", "case", "fix_quote"):
             self._apply_spelling(tok)
         if can_change and self._surely_uzbek(tok.text, tok.lang):
             self._unspell_previous(tok)
@@ -489,7 +489,7 @@ class Controller:
         new = "".join(t.text + t.delim for t in rewritten)
         if d.action == "convert":
             self._switch_layout(d.target_lang)
-        else:
+        elif d.action == "fix_case":
             self.backend.caps_lock_off()
         self._rewrite(len(old), new)
         self.undo_target = tok
@@ -923,7 +923,7 @@ class Controller:
         d = self.engine.decide(strokes, lang, ctx, typed_text=word)
         if d.action == "convert" and d.alt is not None and d.alt.source in ("lexicon", "personal", "abbrev"):
             word, lang = d.text, d.target_lang  # never swap into gibberish: "RE;liable" is Claude's job
-        elif d.action == "fix_case":
+        elif d.action in ("fix_case", "fix_quote"):
             word = d.text
         start, end, core = core_of(word, lang)
         fixed = self._two_capitals(core, lang) if d.action != "fix_case" else None

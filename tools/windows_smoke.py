@@ -204,6 +204,15 @@ def main() -> int:
     check("typo fixed when the word ends", "привет ")
 
     clear()
+    layout(RU)
+    user.press(Key.shift)  # the English quote key, Shift+': "Э" on the Russian layout
+    tap(KeyCode.from_vk(vk_of["'"]))
+    user.release(Key.shift)
+    time.sleep(0.12)
+    type_keys(";len ")
+    check("a quote typed with the English key stays a quote", '"ждут ')
+
+    clear()
     layout(EN)
     type_keys("ghbdtn ")
     for _ in range(2):

@@ -133,7 +133,7 @@ class Reading:
 
 @dataclass
 class Decision:
-    action: str  # "keep" | "convert" | "fix_case"
+    action: str  # "keep" | "convert" | "fix_case" | "fix_quote"
     typed_lang: str
     target_lang: str
     original: str
@@ -168,11 +168,28 @@ def split_core(text: str, lang: str) -> tuple[int, int]:
     return start, end
 
 
+# The double quote is Shift+' on the English layout and Shift+2 on the Russian one.  Pressed out of
+# the other layout's habit at the edge of a word it comes out as "Э" or "@": «Эждут», «вывода@».
+QUOTE_KEYS = (Stroke("'", True), Stroke("2", True))
+_EMAIL = re.compile(r"[^\s@\"]@[^\s@\"]")  # "@" inside a word; at its edges it is a quote key
+
+
+def edge_quotes(strokes: Sequence[Stroke], text: str, lang: str) -> str:
+    """``text`` with the quote keys around the word shown as quotes: «Эждут» → «"ждут»."""
+    if len(strokes) != len(text):
+        return text
+    body = [i for i, (s, ch) in enumerate(zip(strokes, text)) if s not in QUOTE_KEYS and is_letter(ch, lang)]
+    if not body:
+        return text
+    return "".join('"' if s in QUOTE_KEYS and not body[0] <= i <= body[-1] else ch
+                   for i, (s, ch) in enumerate(zip(strokes, text)))
+
+
 def technical_reason(text: str, lang: str) -> str | None:
     """Why the token looks like code, a URL, a number... (never auto-convert those)."""
     if any(ch.isdigit() for ch in text):
         return "digits"
-    if "@" in text or "://" in text or "_" in text:
+    if _EMAIL.search(text) or "://" in text or "_" in text:
         return "technical"
     inner = text[1:-1]
     if "/" in inner or "\\" in inner:
@@ -261,7 +278,18 @@ class Engine:
 
         caps = self._caps_lock_fix(original, typed_lang)
         typed = self.read(original, typed_lang)
+        quoted = edge_quotes(strokes, original, typed_lang)
+        if quoted != original:  # «Эждут»: a quote typed with the English key, not a letter
+            reading = self.read(quoted, typed_lang)
+            if reading.source in ("lexicon", "personal", "abbrev") and reading.score > typed.score + 1.0:
+                decision.action, decision.text, typed = "fix_quote", quoted, reading
+                decision.notes.append("quotes")
         alt = self.read(alt_text, alt_lang)
+        quoted = edge_quotes(strokes, alt_text, alt_lang)
+        if quoted != alt_text:  # «dsdjlf"» is «вывода"», not «выводаЭ»; but «"njn» is «Этот»
+            reading = self.read(quoted, alt_lang)
+            if reading.core == alt.core or reading.score >= alt.score:  # «@hello@» is «"hello"»
+                alt_text, alt = quoted, reading
         decision.typed, decision.alt = typed, alt
 
         if typed.source == "empty" or alt.source == "empty":

@@ -639,3 +639,36 @@ def test_uzbek_selection_is_left_alone_and_claude_is_told(make_screen):
     select(s, "RE;liable")
     s.controller.convert_selection()
     assert s.text == "Reliable" and ai.uzbek is True
+
+
+def test_quotes_typed_with_the_other_layouts_key(make_screen):
+    # the Russian quote is Shift+2 ("@" on English), the English one Shift+' ("Э" on Russian)
+    for layout in (RU, EN):
+        for keys in ('";len dsdjlf" b "dsdtltyj" ', '@;len dsdjlf@ b @dsdtltyj@ '):
+            s = make_screen(layout=layout)
+            s.keys(keys)
+            assert s.text == '"ждут вывода" и "выведено" ', (layout, keys)
+    s = make_screen(layout=RU)
+    s.keys('@hello@ ')  # English in quotes, typed on the Russian layout
+    assert s.text == '"hello" '
+
+
+def test_words_starting_with_e_are_not_taken_for_quotes(make_screen):
+    for layout in (RU, EN):
+        s = make_screen(layout=layout)
+        s.keys('"njn "[ ')
+        assert s.text == "Этот Эх ", layout
+
+
+def test_mentions_and_emails_stay(make_screen):
+    s = make_screen(layout=EN)
+    s.keys("@ivan ivan@mail ")
+    assert s.text == "@ivan ivan@mail "
+
+
+def test_double_shift_puts_the_letter_back(make_screen):
+    s = make_screen(layout=RU)
+    s.keys('";len ')
+    assert s.text == '"ждут '
+    s.double_shift()
+    assert s.text == "Эждут "
