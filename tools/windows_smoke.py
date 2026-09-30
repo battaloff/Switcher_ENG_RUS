@@ -233,6 +233,9 @@ def main() -> int:
     select("vfibyf? rfr ltkf")  # not "ghbdtn": the undo above taught to keep that one as typed
     shift_pause()
     check("Shift+Pause fixes the selected text", "машина, как дела")
+    select("ыршае=зфгыу")
+    shift_pause()
+    check("words joined by \"=\" are fixed one by one", "shift=pause")
     layout(EN)
     select("shift+pause")
     shift_pause()

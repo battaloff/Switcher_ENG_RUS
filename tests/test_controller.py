@@ -483,10 +483,47 @@ def test_claude_fixes_the_selection_with_typos_allowed(make_screen):
 
 def test_without_claude_the_selection_is_still_fixed_locally(make_screen):
     s = make_screen(layout=EN, ai=FakeAI(RuntimeError("нет сети")))
+    select(s, "Ghbdtn? rfr ltkf RE;liable")
+    s.controller.convert_selection()
+    assert s.text == "Привет, как дела RE;liable"
+    assert "без него" in s.notes[-1]
+
+
+def test_what_switcher_knows_is_fixed_at_once_without_claude(make_screen):
+    ai = FakeAI("должен не понадобиться")
+    s = make_screen(layout=EN, ai=ai)
     select(s, "Ghbdtn? rfr ltkf")
     s.controller.convert_selection()
     assert s.text == "Привет, как дела"
-    assert "без него" in s.notes[-1]
+    select(s, "shift+pause")
+    s.controller.convert_selection()
+    assert s.text == "shift+pause" and "выглядит правильно" in s.notes[-1]
+    assert ai.calls == []
+
+
+def test_words_joined_by_keys_both_layouts_share_are_fixed_one_by_one(make_screen):
+    s = make_screen(layout=RU, ai=FakeAI("должен не понадобиться"))
+    select(s, "ыршае=зфгыу")
+    s.controller.convert_selection()
+    assert s.text == "shift=pause" and s.layout == EN
+    select(s, "ыршае+зфгыу")
+    s.controller.convert_selection()
+    assert s.text == "shift+pause"
+
+
+def test_the_claude_hotkey_always_asks_claude(make_screen):
+    ai = FakeAI("Привет, как дела")
+    s = make_screen(layout=EN, ai=ai)
+    select(s, "Ghbdtn? rfr ltkf")
+    s.controller.ai_fix()
+    assert s.text == "Привет, как дела" and len(ai.calls) == 1
+
+
+def test_unknown_text_without_claude_says_so(make_screen):
+    s = make_screen(layout=EN)
+    select(s, "RE;liable")
+    s.controller.convert_selection()
+    assert s.text == "RE;liable" and "Не знаю" in s.notes[-1]
 
 
 def test_selection_hotkey_waits_until_shift_is_released(make_screen):

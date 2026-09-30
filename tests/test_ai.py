@@ -63,6 +63,7 @@ def test_no_fallbacks_for_models_without_them():
     assistant = Assistant(AI(model="claude-haiku-4-5"), client=fake_client({"words": ["a", "b", "c"]}, captured))
     assistant.fix_phrase(PIECES)
     assert "fallbacks" not in captured[0]["body"]
+    assert "effort" not in captured[0]["body"]["output_config"]  # Haiku 4.5 rejects it
 
 
 def test_review_digest_and_validation(profile, keyboard):

@@ -92,6 +92,11 @@ class Controller:
         self.keyboard = keyboard
         self.ai = ai
         self.speller = Speller(engine.models, keyboard)
+        # "=", "+", digits…: the same key gives the same character in both layouts, so they split
+        # words: "ыршае=зфгыу" is "shift" and "pause".  "-" and "'" stay inside words ("кто-то").
+        same = "".join(ch for ch in "0123456789!%()*+=\\_" if keyboard.convert_mixed(ch, RU) == ch
+                       and keyboard.convert_mixed(ch, EN) == ch)
+        self._word_split = re.compile(r"(\s+|[" + re.escape(same) + r"]+)")
         self._spell_keep: set[tuple[str, str]] = set()  # corrections the user undid (even with learning off)
         self._run_async = run_async or self._thread_async
         self.post: Callable[[Callable[[], None]], None] = lambda fn: fn()  # replaced by the runtime
@@ -729,11 +734,12 @@ class Controller:
             _, _, right = core_of(converted_text, converted_lang)
             self._keep_spelling(wrong, tok.lang, right)
 
-    def convert_selection(self) -> None:
-        """Fix the selected text: Claude if connected, otherwise word by word (layout and typos).
+    def convert_selection(self, ask_claude: bool = False) -> None:
+        """Fix the selected text word by word (layout and typos); what that cannot fix goes to Claude.
 
-        Text that is already right is left alone; pressing again within a few seconds swaps the
-        layout of the selection anyway, as Punto does.
+        Only text with words Switcher does not know waits for Claude: the rest is instant.  Text
+        that is already right is left alone; pressing again within a few seconds swaps the layout
+        of the selection anyway, as Punto does.
         """
         text = self.backend.copy_selection()
         if not text:
@@ -744,12 +750,13 @@ class Controller:
             self._paste_selection(text, converted, target, "selection_swap")
             return
         local = self._fix_words(text)
-        if self._ai_ready():
+        known = self._all_known(local)
+        if self._ai_ready() and (ask_claude or not known):
             self._ai_fix_selection(text, fallback=local)
         elif local != text:
             self._paste_selection(text, local, text_lang(local.split()[-1]) if local.split() else None, "selection")
         else:
-            self._selection_untouched(text)
+            self._selection_untouched(text, known)
 
     def _swap_layout(self, text: str) -> tuple[str, str]:
         lang = text_lang(text)
@@ -762,19 +769,46 @@ class Controller:
 
     def _fix_words(self, text: str) -> str:
         """Word by word: switch only words typed in the wrong layout, then fix typos."""
-        parts = re.split(r"(\s+)", text)
-        words = [(i, part) for i, part in enumerate(parts) if part and not part.isspace()]
+        parts = self._word_split.split(text)
+        words = [(i, part) for i, part in enumerate(parts) if text_lang(part) in (EN, RU)]
         langs: dict[int, str] = {}
         for i, part in words:  # first pass: each word on its own, with the words before it
-            lang = text_lang(part)
-            if lang in (EN, RU):
-                prev = [langs[j] for j, _ in words if j < i and j in langs][-3:]
-                parts[i], langs[i] = self._fix_word(part, lang, Context(app=self.app, prev_langs=prev))
-        for n, (i, part) in enumerate(words[:-1]):  # second pass: short words judged by the next one
-            j = words[n + 1][0]
-            if i in langs and j in langs and langs[i] == text_lang(part) and langs[j] != langs[i]:
+            prev = [langs[j] for j, _ in words if j < i][-3:]
+            parts[i], langs[i] = self._fix_word(part, text_lang(part), Context(app=self.app, prev_langs=prev))
+        for (i, part), (j, _) in zip(words, words[1:]):  # second pass: short words judged by the next one
+            if langs[i] == text_lang(part) and langs[j] != langs[i]:
                 parts[i], langs[i] = self._fix_word(part, langs[i], Context(app=self.app, next_lang=langs[j]))
+        switched = [i for i, part in words if langs[i] != text_lang(part)]
+        for i in range(0, len(parts), 2):  # letterless bits ("10^30") were typed on the words' layout
+            if parts[i] and i not in langs and not any(ch.isalpha() for ch in parts[i]):
+                near = min((j for j, _ in words), key=lambda j: (abs(j - i), j > i), default=None)
+                if near is not None and near in switched:
+                    parts[i] = self.keyboard.convert_mixed(parts[i], langs[near])
         return "".join(parts)
+
+    def _known_word(self, word: str, lang: str) -> bool:
+        if "-" in word:  # "кто-то": the dictionary has the halves
+            return all(self._known_word(piece, lang) for piece in word.split("-") if piece)
+        if len(word) == 1:  # every single letter is "frequent" in the dictionary; few are words
+            return word in ("авиоксуя" if lang == RU else "ai")
+        zipf = self.speller.zipf(word, lang)
+        return (zipf is not None and zipf >= 2.5) or self.learner.profile.personal_zipf(word, lang) is not None
+
+    def _all_known(self, text: str) -> bool:
+        """Every word is one the dictionary or the user knows well: nothing is left for Claude."""
+        for part in self._word_split.split(text):
+            if not any(ch.isalpha() for ch in part):
+                continue
+            lang = text_lang(part)
+            if lang not in (EN, RU):
+                return False
+            start, end, core = core_of(part, lang)
+            if not core.replace("-", "").replace("'", "").isalpha() \
+                    or any(ch.isalpha() for ch in part[:start] + part[end:]):
+                return False  # "RE;liable": letters and a stray key
+            if not self._known_word(core.lower(), lang):
+                return False
+        return True
 
     def _fix_word(self, word: str, lang: str, ctx: Context) -> tuple[str, str]:
         strokes = self.keyboard.strokes(word, lang)
@@ -802,10 +836,14 @@ class Controller:
                                        final_lang=target or "")
         self.reset("selection")
 
-    def _selection_untouched(self, text: str) -> None:
+    def _selection_untouched(self, text: str, known: bool = True) -> None:
         self.backend.restore_clipboard()
         self._selection_memo = (text, self._now)
-        self.backend.notify("Выделенный текст выглядит правильно. Нажмите ещё раз, чтобы всё равно сменить раскладку.")
+        if known:
+            self.backend.notify("Выделенный текст выглядит правильно. Нажмите ещё раз, чтобы всё равно сменить раскладку.")
+        else:
+            self.backend.notify("Не знаю, как это исправить (с Claude получится лучше). "
+                                "Нажмите ещё раз, чтобы просто сменить раскладку.")
 
     def _ai_ready(self) -> bool:
         return self.ai is not None and getattr(self.ai, "has_credentials", lambda: True)()
@@ -826,7 +864,7 @@ class Controller:
         if tokens:
             self._ai_fix_phrase(tokens)
         else:
-            self.convert_selection()
+            self.convert_selection(ask_claude=True)  # asked for Claude by name: no local shortcut
 
     def _ai_fix_phrase(self, tokens: list[Token]) -> None:
         pieces = []

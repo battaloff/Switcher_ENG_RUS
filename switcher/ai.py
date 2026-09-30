@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 # Models that accept server-side refusal fallbacks (`fallbacks: "default"`).
 _FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
+_NO_EFFORT_MODELS = ("claude-haiku-4-5", "claude-sonnet-4-5")  # these reject output_config.effort
 
 REVIEW_KINDS = ("auto", "undo", "manual", "prefix_fix", "typo_fix", "ambiguous", "replace", "replace_undo",
                 "selection")
@@ -205,13 +206,16 @@ class Assistant:
         kwargs: dict[str, Any] = {}
         if self.config.model in _FALLBACK_MODELS:
             kwargs.update(betas=[_FALLBACK_BETA], fallbacks="default")
+        output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": schema}}
+        if not self.config.model.startswith(_NO_EFFORT_MODELS):
+            output_config["effort"] = effort
         try:
             response = self.client.beta.messages.create(
                 model=self.config.model,
                 max_tokens=max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-                output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+                output_config=output_config,
                 **kwargs,
             )
         except anthropic.AuthenticationError as exc:
