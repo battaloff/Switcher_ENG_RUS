@@ -51,6 +51,7 @@ class Config:
     convert_on_enter: bool = False     # Enter may already have sent the message in chats
     fix_caps_lock: bool = True         # "пРИВЕТ" → "Привет"
     fix_two_capitals: bool = True      # "ЗДравствуйте" → "Здравствуйте"
+    writes_uzbek: bool = False         # leave Uzbek words alone: "олдин" is not a typo of "один"
     early_switch: bool = True          # like Punto: switch after the first 3-4 letters, not at the end
     autocorrect: bool = True           # fix typos at the end of a word: "превет" → "привет"
     ru_variant: str = "auto"           # "pc" | "mac" | "auto"

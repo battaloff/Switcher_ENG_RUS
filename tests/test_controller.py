@@ -211,9 +211,9 @@ class FakeAI:
         self.answer = answer
         self.calls = []
 
-    def fix_phrase(self, pieces, style="", app="", typos=None):
+    def fix_phrase(self, pieces, style="", app="", typos=None, uzbek=False):
         self.calls.append(pieces)
-        self.typos = typos
+        self.typos, self.uzbek = typos, uzbek
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
@@ -582,3 +582,60 @@ def test_two_capitals_in_the_selection(make_screen):
     select(s, "ЗДравствуйте ПРивет")
     s.controller.convert_selection()
     assert s.text == "Здравствуйте Привет" and ai.calls == []
+
+
+def uzbek_config():
+    config = Config()
+    config.writes_uzbek = True
+    return config
+
+
+def test_uzbek_words_are_left_alone_for_someone_who_writes_uzbek(make_screen):
+    s = make_screen(layout=RU)
+    s.write("олдин жуда ", RU)
+    assert s.text == "один ;elf "  # what happens without the setting
+    s = make_screen(uzbek_config(), layout=RU)
+    s.write("олдин улар жуда эмас ёмон ", RU)
+    assert s.text == "олдин улар жуда эмас ёмон "
+    s = make_screen(uzbek_config(), layout=EN)
+    s.keys("bugun keldim yo'q oldin ")
+    assert s.text == "bugun keldim yo'q oldin "
+
+
+def test_russian_and_english_are_still_fixed_with_uzbek_on(make_screen):
+    s = make_screen(uzbek_config(), layout=RU)
+    s.write("превет ", RU)
+    s.keys("hello ")  # on the Russian layout: "руддщ"
+    assert s.text == "привет hello "
+    s = make_screen(uzbek_config(), layout=EN)
+    s.keys("ye ghbdtn ")  # "ye" is also Uzbek, but too short to tell
+    assert s.text == "ну привет "
+
+
+def test_an_uzbek_phrase_takes_back_the_correction_of_the_word_before(make_screen, profile):
+    s = make_screen(uzbek_config(), layout=RU)
+    s.write("Бозор ", RU)
+    assert s.text == "Обзор "  # not a listed word: looks like a Russian typo…
+    s.write("мен ", RU)
+    assert s.text == "Бозор мен "  # …until the next word shows the phrase is Uzbek
+    assert profile.personal_zipf("бозор", RU) is not None
+    s.write("бозор ", RU)
+    assert s.text == "Бозор мен бозор "
+
+
+def test_no_switch_into_a_non_word_for_uzbek_writers(make_screen):
+    s = make_screen(uzbek_config(), layout=RU)
+    s.write("гушт ", RU)
+    assert s.text == "гушт "
+
+
+def test_uzbek_selection_is_left_alone_and_claude_is_told(make_screen):
+    ai = FakeAI("не понадобится")
+    s = make_screen(uzbek_config(), layout=EN, ai=ai)
+    select(s, "олдин улар жуда")
+    s.controller.convert_selection()
+    assert s.text == "олдин улар жуда" and ai.calls == []
+    ai.answer = "Reliable"
+    select(s, "RE;liable")
+    s.controller.convert_selection()
+    assert s.text == "Reliable" and ai.uzbek is True

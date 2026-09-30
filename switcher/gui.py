@@ -461,6 +461,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.var_enter = tk.BooleanVar(value=c.convert_on_enter)
         self.var_caps = tk.BooleanVar(value=c.fix_caps_lock)
         self.var_two_caps = tk.BooleanVar(value=c.fix_two_capitals)
+        self.var_uzbek = tk.BooleanVar(value=c.writes_uzbek)
         self.var_early = tk.BooleanVar(value=c.early_switch)
         self.var_autocorrect = tk.BooleanVar(value=c.autocorrect)
 
@@ -479,6 +480,9 @@ class SettingsWindow(ctk.CTkToplevel):
                          "«пРИВЕТ» → «Привет», и Caps Lock выключится")
         self._switch_row(card, self.var_two_caps, "Исправлять ДВе ЗАглавные",
                          "«ПРивет» → «Привет»: Shift отпущен на букву позже. Двойной Shift вернёт как было")
+        self._switch_row(card, self.var_uzbek, "Я пишу и по-узбекски",
+                         "Узбекские слова латиницей и кириллицей не исправляются: «олдин» не станет «один», "
+                         "«жуда» — «;elf»")
         self._switch_row(card, self.var_enter, "Исправлять слово перед Enter",
                          "В чатах сообщение может уйти раньше, чем слово исправится")
 
@@ -957,6 +961,7 @@ class SettingsWindow(ctk.CTkToplevel):
         new.convert_on_enter = self.var_enter.get()
         new.fix_caps_lock = self.var_caps.get()
         new.fix_two_capitals = self.var_two_caps.get()
+        new.writes_uzbek = self.var_uzbek.get()
         new.early_switch = self.var_early.get()
         new.autocorrect = self.var_autocorrect.get()
         new.threshold = round(float(self.var_threshold.get()), 1)

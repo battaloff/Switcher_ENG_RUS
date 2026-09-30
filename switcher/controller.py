@@ -24,6 +24,8 @@ from .layouts import (EN, RU, Keyboard, Stroke, canonical_keys, fix_two_capitals
                       other, text_lang)
 from .learner import Learner, core_of, levenshtein
 from .speller import Speller
+from .uzbek import known as known_uzbek
+from .uzbek import looks_uzbek
 
 log = logging.getLogger(__name__)
 
@@ -406,6 +408,8 @@ class Controller:
             self._apply_two_capitals(tok)
         if can_change and tok.change in ("", "convert", "case"):
             self._apply_spelling(tok)
+        if can_change and self._surely_uzbek(tok.text, tok.lang):
+            self._unspell_previous(tok)
 
         self.learner.committed(app=self.app, lang=tok.lang, text=tok.text, decision=tok.decision,
                                changed_from=tok.original_text if tok.change == "convert" else None)
@@ -425,6 +429,8 @@ class Controller:
             keep = d.action == "convert"
         else:
             keep = d.reason != "model" or d.margin >= 0  # the whole word still reads better switched
+        if self._uzbek_blocks(d, original, source):
+            keep = False  # "bugun": an Uzbek word, not Russian typed on the wrong layout
         tok.typed_lang = source
         if not keep and allow_change:
             # the words switched along with it go back too
@@ -468,6 +474,8 @@ class Controller:
         if d is None or not d.changes_text:
             return
         if d.action == "fix_case" and not self.config.fix_caps_lock:
+            return
+        if d.action == "convert" and self._uzbek_blocks(d, tok.text, tok.typed_lang):
             return
         group: list[tuple[Token, Decision]] = []
         if d.action == "convert" and self.config.look_back:
@@ -552,6 +560,62 @@ class Controller:
         self.undo_target = tok
         self.learner.case_fixed(app=self.app, wrong=core, right=fixed, lang=tok.lang)
 
+    # -- Uzbek ---------------------------------------------------------------
+
+    def _typed_uzbek(self, text: str, lang: str) -> bool:
+        """A listed Uzbek word (three letters or more: "ye" is also "ну" on the wrong layout)."""
+        if not self.config.writes_uzbek or lang not in (EN, RU):
+            return False
+        _, _, core = core_of(text, lang)
+        return sum(ch.isalpha() for ch in core) >= 3 and known_uzbek(core)
+
+    def _uzbek_blocks(self, d: Decision, text: str, lang: str) -> bool:
+        """For someone who also writes Uzbek, a switch only into a real word: "гушт" is not "uein"."""
+        if not self.config.writes_uzbek:
+            return False
+        if self._typed_uzbek(text, lang):
+            return True
+        return d.reason != "rule" and (d.alt is None or d.alt.source not in ("lexicon", "personal", "abbrev"))
+
+    def _surely_uzbek(self, text: str, lang: str) -> bool:
+        """Uzbek and no common Russian or English word: enough to take the words around it for Uzbek too."""
+        if not self.config.writes_uzbek or lang not in (EN, RU):
+            return False
+        _, _, core = core_of(text, lang)
+        word = core.lower()
+        if len(word) < 3 or not looks_uzbek(word):
+            return False
+        zipf = self.speller.zipf(word, lang)
+        return zipf is None or zipf < 4.0  # "мен" is 3.6: the dictionary has seen Central Asian text
+
+    def _uzbek_phrase(self, tok: Token) -> bool:
+        """The word is Uzbek, or unknown in an Uzbek phrase ("мен олдин …")."""
+        if not self.config.writes_uzbek:
+            return False
+        _, _, core = core_of(tok.text, tok.lang)
+        if looks_uzbek(core):
+            return True
+        for prev in reversed(self.history[-3:]):
+            if "\n" in prev.delim:
+                break
+            if self._surely_uzbek(prev.text, prev.lang):
+                return True
+        return False
+
+    def _unspell_previous(self, tok: Token) -> None:
+        """"Олдин мен": the word before was corrected into Russian before the phrase showed it is Uzbek."""
+        prev = self.history[-1] if self.history else None
+        if prev is None or prev.change != "spell" or "\n" in prev.delim:
+            return
+        self._rewrite(len(prev.text + prev.delim + tok.text + tok.delim),
+                      prev.original_text + prev.delim + tok.text + tok.delim)
+        _, _, wrong = core_of(prev.original_text, prev.lang)
+        _, _, right = core_of(prev.text, prev.lang)
+        prev.text, prev.change = prev.original_text, ""
+        if self.undo_target is prev:
+            self.undo_target = None
+        self._keep_spelling(wrong, prev.lang, right)  # and it stays as typed from now on
+
     def _sentence_start(self) -> bool:
         if not self.history:
             return True  # nothing known before the word
@@ -561,6 +625,8 @@ class Controller:
     def _apply_spelling(self, tok: Token) -> None:
         """Autocorrect: "превет" → "привет" once the word is finished."""
         if not self.config.autocorrect or self._careful() or tok.lang not in (EN, RU):
+            return
+        if self._uzbek_phrase(tok):
             return
         start, end, core = core_of(tok.text, tok.lang)
         if len(core) < 3 or not core.isalpha() or core[1:] != core[1:].lower():
@@ -809,13 +875,14 @@ class Controller:
         """Word by word: switch only words typed in the wrong layout, then fix typos."""
         parts = self._word_split.split(text)
         words = [(i, part) for i, part in enumerate(parts) if text_lang(part) in (EN, RU)]
+        uzbek = any(self._surely_uzbek(part, text_lang(part)) for _, part in words)
         langs: dict[int, str] = {}
         for i, part in words:  # first pass: each word on its own, with the words before it
             prev = [langs[j] for j, _ in words if j < i][-3:]
-            parts[i], langs[i] = self._fix_word(part, text_lang(part), Context(app=self.app, prev_langs=prev))
+            parts[i], langs[i] = self._fix_word(part, text_lang(part), Context(app=self.app, prev_langs=prev), uzbek)
         for (i, part), (j, _) in zip(words, words[1:]):  # second pass: short words judged by the next one
             if langs[i] == text_lang(part) and langs[j] != langs[i]:
-                parts[i], langs[i] = self._fix_word(part, langs[i], Context(app=self.app, next_lang=langs[j]))
+                parts[i], langs[i] = self._fix_word(part, langs[i], Context(app=self.app, next_lang=langs[j]), uzbek)
         switched = [i for i, part in words if langs[i] != text_lang(part)]
         for i in range(0, len(parts), 2):  # letterless bits ("10^30") were typed on the words' layout
             if parts[i] and i not in langs and not any(ch.isalpha() for ch in parts[i]):
@@ -844,13 +911,14 @@ class Controller:
             if not core.replace("-", "").replace("'", "").isalpha() \
                     or any(ch.isalpha() for ch in part[:start] + part[end:]):
                 return False  # "RE;liable": letters and a stray key
-            if not self._known_word(core.lower(), lang):
+            if not self._known_word(core.lower(), lang) \
+                    and not (self.config.writes_uzbek and looks_uzbek(core)):
                 return False
         return True
 
-    def _fix_word(self, word: str, lang: str, ctx: Context) -> tuple[str, str]:
+    def _fix_word(self, word: str, lang: str, ctx: Context, uzbek_phrase: bool = False) -> tuple[str, str]:
         strokes = self.keyboard.strokes(word, lang)
-        if not strokes:
+        if not strokes or self._typed_uzbek(word, lang):
             return word, lang
         d = self.engine.decide(strokes, lang, ctx, typed_text=word)
         if d.action == "convert" and d.alt is not None and d.alt.source in ("lexicon", "personal", "abbrev"):
@@ -863,7 +931,8 @@ class Controller:
             word = word[:start] + fixed + word[end:]
         if self.config.autocorrect:
             start, end, core = core_of(word, lang)
-            if len(core) >= 3 and core.isalpha() and core[1:] == core[1:].lower() \
+            uzbek = self.config.writes_uzbek and (uzbek_phrase or looks_uzbek(core))
+            if len(core) >= 3 and core.isalpha() and core[1:] == core[1:].lower() and not uzbek \
                     and self.learner.profile.personal_zipf(core.lower(), lang) is None:
                 fix = self.speller.suggest(core.lower(), lang)
                 if fix:
@@ -886,6 +955,9 @@ class Controller:
         else:
             self.backend.notify("Не знаю, как это исправить (с Claude получится лучше). "
                                 "Нажмите ещё раз, чтобы просто сменить раскладку.")
+
+    def _ai_languages(self) -> dict:
+        return {"uzbek": True} if self.config.writes_uzbek else {}
 
     def _ai_ready(self) -> bool:
         return self.ai is not None and getattr(self.ai, "has_credentials", lambda: True)()
@@ -923,7 +995,8 @@ class Controller:
         self.backend.notify("ИИ исправляет фразу…")
 
         def work():
-            return self.ai.fix_phrase(pieces, style=self.learner.profile.get_meta("style_summary"), app=app)
+            return self.ai.fix_phrase(pieces, style=self.learner.profile.get_meta("style_summary"), app=app,
+                                      **self._ai_languages())
 
         def done(result):
             if isinstance(result, Exception):
@@ -959,7 +1032,7 @@ class Controller:
         def work():
             # the user asked for this fix explicitly: typos may be corrected too
             return self.ai.fix_phrase(pieces, style=self.learner.profile.get_meta("style_summary"), app=app,
-                                      typos=True)
+                                      typos=True, **self._ai_languages())
 
         def done(result):
             if isinstance(result, Exception):

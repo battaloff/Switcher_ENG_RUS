@@ -64,7 +64,7 @@ alphabet ("ghbdtn" is "привет" typed on the English layout, "руддщ" i
 You get the phrase word by word. For every word you see what is on screen and the same keys \
 rendered on the English and on the Russian layout. Return, for every word in the same order, the \
 word the user meant — almost always exactly one of the three variants. Words legitimately written \
-in English inside Russian text (names, code, brands, terms) stay English.
+in English inside Russian text (names, code, brands, terms) stay English.{languages}
 
 Change nothing else: keep punctuation, capitalization, slang, abbreviations and the user's own \
 spelling{typos}. The user's style, learned from their corrections:
@@ -238,7 +238,8 @@ class Assistant:
 
     # -- phrase fix ----------------------------------------------------------
 
-    def fix_phrase(self, pieces: list[dict], style: str = "", app: str = "", typos: bool | None = None) -> str:
+    def fix_phrase(self, pieces: list[dict], style: str = "", app: str = "", typos: bool | None = None,
+                   uzbek: bool = False) -> str:
         """``pieces``: [{"screen", "en", "ru", "delim"}] → the corrected phrase.
 
         ``typos``: also fix obvious typos (default: the ``fix_typos`` setting; fixing a
@@ -249,6 +250,9 @@ class Assistant:
             typos=(" — except obvious typos, which you do fix: a stray, missing or doubled key, swapped "
                    "letters, a Shift held one letter too long (\"RE;liable\" → \"Reliable\")") if allow else "",
             style=style or "(nothing learned yet)",
+            languages=(" The user also writes Uzbek, in Latin (\"oldin\", \"yo'q\") and in Cyrillic (\"олдин\", "
+                       "\"йўқ\", or \"йук\" typed on a Russian keyboard): Uzbek words stay exactly as typed.")
+            if uzbek else "",
         )
         payload = {"app": app, "words": [{k: p[k] for k in ("screen", "en", "ru")} for p in pieces]}
         data = self._ask(system, payload, _FIX_SCHEMA, effort="low", max_tokens=4000)

@@ -138,3 +138,12 @@ def test_unscoped_key_gets_a_clear_message():
         assistant.check_key()
     with pytest.raises(AIError, match="Default Workspace"):
         assistant.fix_phrase(PIECES)
+
+
+def test_uzbek_writers_get_their_words_kept():
+    captured = []
+    assistant = Assistant(AI(), client=fake_client({"words": ["я", "запушил", "main"]}, captured))
+    assistant.fix_phrase(PIECES)
+    assert "Uzbek" not in captured[0]["body"]["system"]
+    assistant.fix_phrase(PIECES, uzbek=True)
+    assert "Uzbek words stay exactly as typed" in captured[1]["body"]["system"]
