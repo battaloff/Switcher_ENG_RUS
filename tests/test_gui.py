@@ -153,9 +153,8 @@ def test_recording_refuses_typing_keys_and_duplicates(window):
     window._record_press(key_event(window, "k", 75, "k"))
     assert window.hotkey_specs["toggle"] == "<ctrl>+<alt>+s"
     assert "помешает печатать" in window.hotkey_hint.cget("text")
-    window._record_press(key_event(window, "Control_L"))
-    window._record_press(key_event(window, "Alt_L"))
-    window._record_press(key_event(window, "c", 67, "c"))  # taken by "convert selection"
+    window._record_press(key_event(window, "Shift_L"))
+    window._record_press(key_event(window, "Pause", 19))  # taken by "fix the selection"
     assert window.hotkey_specs["toggle"] == "<ctrl>+<alt>+s"
     assert "уже назначено" in window.hotkey_hint.cget("text")
 

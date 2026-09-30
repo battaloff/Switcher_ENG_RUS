@@ -32,13 +32,13 @@ log = logging.getLogger(__name__)
 MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]
 HOTKEY_ACTIONS = (
     ("convert_last", "Исправить / отменить последнее слово"),
-    ("convert_selection", "Перевести выделенный текст"),
+    ("convert_selection", "Исправить выделенный текст"),
     ("ai_fix", "Исправить фразу с Claude"),
     ("toggle", "Пауза"),
 )
 HOTKEY_HINTS = {
     "convert_last": "Если Switcher ошибся или пропустил слово",
-    "convert_selection": "Текст, набранный не в той раскладке",
+    "convert_selection": "Раскладка и опечатки; с Claude — точнее",
     "ai_fix": "Claude перепишет фразу в нужной раскладке",
     "toggle": "Выключить и снова включить автоисправление",
 }

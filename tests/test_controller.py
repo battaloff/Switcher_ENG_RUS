@@ -210,8 +210,11 @@ class FakeAI:
         self.answer = answer
         self.calls = []
 
-    def fix_phrase(self, pieces, style="", app=""):
+    def fix_phrase(self, pieces, style="", app="", typos=None):
         self.calls.append(pieces)
+        self.typos = typos
+        if isinstance(self.answer, Exception):
+            raise self.answer
         return self.answer
 
 
@@ -441,3 +444,58 @@ def test_double_shift_mid_word_takes_back_the_words_switched_along(make_screen):
     assert s.text == "у меня"
     s.double_shift()
     assert s.text == "e vtyz" and s.layout == EN
+
+
+# -- fixing the selection (Shift+Pause) -------------------------------------------
+
+
+def select(s, text):
+    s.text = text
+    s.selection = text
+
+
+def test_right_text_is_left_alone_and_a_second_press_swaps_it(make_screen):
+    s = make_screen(layout=EN)
+    select(s, "shift+pause")
+    s.controller.convert_selection()
+    assert s.text == "shift+pause" and "выглядит правильно" in s.notes[-1]
+    s.selection = "shift+pause"  # still selected, pressed again: the user insists
+    s.controller.convert_selection()
+    assert s.text == "ыршае+зфгыу" and s.layout == RU
+
+
+def test_only_wrong_words_change_and_typos_are_fixed(make_screen):
+    s = make_screen(layout=EN)
+    select(s, "hello ghbdtn? rfr ltkf? превет")  # "?" on the EN layout is the Russian ","
+    s.controller.convert_selection()
+    assert s.text == "hello привет, как дела, привет"
+
+
+def test_claude_fixes_the_selection_with_typos_allowed(make_screen):
+    ai = FakeAI("Reliable")
+    s = make_screen(layout=EN, ai=ai)
+    select(s, "RE;liable")
+    s.controller.convert_selection()
+    assert s.text == "Reliable"
+    assert ai.typos is True
+    assert ai.calls[0] == [{"screen": "RE;liable", "en": "RE;liable", "ru": "КУждшфиду", "delim": ""}]
+
+
+def test_without_claude_the_selection_is_still_fixed_locally(make_screen):
+    s = make_screen(layout=EN, ai=FakeAI(RuntimeError("нет сети")))
+    select(s, "Ghbdtn? rfr ltkf")
+    s.controller.convert_selection()
+    assert s.text == "Привет, как дела"
+    assert "без него" in s.notes[-1]
+
+
+def test_selection_hotkey_waits_until_shift_is_released(make_screen):
+    config = Config()
+    config.hotkeys.convert_selection = "<shift>+<pause>"
+    s = make_screen(config, layout=EN)
+    select(s, "Ghbdtn")
+    s._event("press", "shift")
+    s._event("press", "pause")
+    assert s.text == "Ghbdtn"  # Ctrl+C now would reach the app as Ctrl+Shift+C
+    s._event("release", "shift")
+    assert s.text == "Привет"

@@ -68,6 +68,9 @@ class FakeScreen:
     def copy_selection(self):
         return self.selection or None
 
+    def restore_clipboard(self):
+        pass
+
     def paste_text(self, text):
         if self.selection and self.text.endswith(self.selection):
             self.text = self.text[: -len(self.selection)]
@@ -150,6 +153,15 @@ class FakeScreen:
         self._event("press", "mouse")
 
 
+def _run_now(work, done):
+    """Like Controller._thread_async, minus the thread: a failing job hands its exception to done."""
+    try:
+        result = work()
+    except Exception as exc:
+        result = exc
+    done(result)
+
+
 @pytest.fixture
 def make_screen(models, keyboard, profile):
     def factory(config: Config | None = None, layout: str = EN, app: str = "notes", ai=None):
@@ -159,7 +171,7 @@ def make_screen(models, keyboard, profile):
         engine.tuning.threshold = config.threshold
         learner = Learner(profile, models, keyboard, config.learning)
         controller = Controller(screen, engine, learner, config, keyboard, ai=ai,
-                                run_async=lambda work, done: done(work()))
+                                run_async=_run_now)
         screen.controller = controller
         return screen
 

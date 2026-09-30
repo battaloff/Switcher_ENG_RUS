@@ -240,6 +240,18 @@ class BaseBackend:
             self._restore_clipboard = saved
         return None if text == marker else text
 
+    def restore_clipboard(self) -> None:
+        """Put back what the clipboard held before copy_selection, when nothing gets pasted."""
+        saved, self._restore_clipboard = self._restore_clipboard, None
+        if saved is None:
+            return
+        try:
+            import pyperclip
+
+            pyperclip.copy(saved)
+        except Exception:
+            log.debug("clipboard restore failed", exc_info=True)
+
     def paste_text(self, text: str) -> None:
         try:
             import pyperclip

@@ -41,7 +41,7 @@ user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
 user32.LoadKeyboardLayoutW.argtypes = (wintypes.LPCWSTR, wintypes.UINT)
 user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
-WM_SETTEXT, WM_GETTEXT = 0x000C, 0x000D
+WM_SETTEXT, WM_GETTEXT, EM_SETSEL = 0x000C, 0x000D, 0x00B1
 
 
 def class_name(hwnd) -> str:
@@ -214,6 +214,31 @@ def main() -> int:
     rule = app.profile.layout_rule("ghbdtn", app.backend.active_app())
     print(f"{'OK  ' if rule else 'FAIL'} rule learned from the undo: {rule}")
     results.append(bool(rule))
+
+    def select(text: str) -> None:
+        clear()
+        buf = ctypes.create_unicode_buffer(text)
+        user32.SendMessageW(edit, WM_SETTEXT, 0, ctypes.addressof(buf))
+        user32.SendMessageW(edit, EM_SETSEL, 0, len(text))
+        time.sleep(0.3)
+
+    def shift_pause() -> None:
+        user.press(Key.shift)  # Switcher must wait for Shift to be let go before its own Ctrl+C
+        tap(Key.pause)
+        time.sleep(0.15)
+        user.release(Key.shift)
+        time.sleep(2.0)
+
+    layout(EN)
+    select("ghbdtn? rfr ltkf")
+    shift_pause()
+    check("Shift+Pause fixes the selected text", "привет, как дела")
+    layout(EN)
+    select("shift+pause")
+    shift_pause()
+    check("Shift+Pause leaves right text alone", "shift+pause")
+    shift_pause()
+    check("a second Shift+Pause swaps its layout anyway", "ыршае+зфгыу")
 
     # Windows silently removes a hook that once answers too slowly; do the same and expect a recovery
     from pynput._util.win32 import SystemHook

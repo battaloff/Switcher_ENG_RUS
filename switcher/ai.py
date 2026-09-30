@@ -234,10 +234,16 @@ class Assistant:
 
     # -- phrase fix ----------------------------------------------------------
 
-    def fix_phrase(self, pieces: list[dict], style: str = "", app: str = "") -> str:
-        """``pieces``: [{"screen", "en", "ru", "delim"}] → the corrected phrase."""
+    def fix_phrase(self, pieces: list[dict], style: str = "", app: str = "", typos: bool | None = None) -> str:
+        """``pieces``: [{"screen", "en", "ru", "delim"}] → the corrected phrase.
+
+        ``typos``: also fix obvious typos (default: the ``fix_typos`` setting; fixing a
+        selection the user explicitly asked for always allows it).
+        """
+        allow = self.config.fix_typos if typos is None else typos
         system = FIX_SYSTEM.format(
-            typos=" (except obvious typos, which you may fix)" if self.config.fix_typos else "",
+            typos=(" — except obvious typos, which you do fix: a stray, missing or doubled key, swapped "
+                   "letters, a Shift held one letter too long (\"RE;liable\" → \"Reliable\")") if allow else "",
             style=style or "(nothing learned yet)",
         )
         payload = {"app": app, "words": [{k: p[k] for k in ("screen", "en", "ru")} for p in pieces]}

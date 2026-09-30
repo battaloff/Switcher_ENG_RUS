@@ -12,6 +12,7 @@ listener just queues events.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ class Backend(Protocol):
     def set_layout(self, lang: str) -> bool: ...
     def caps_lock_off(self) -> None: ...
     def copy_selection(self) -> str | None: ...
+    def restore_clipboard(self) -> None: ...
     def paste_text(self, text: str) -> None: ...
     def notify(self, message: str) -> None: ...
 
@@ -103,6 +105,8 @@ class Controller:
         self.undo_target: Token | None = None
         self.manual_target: tuple[Token, str, tuple[str, str] | None, float] | None = None
         self.early_rejected: tuple[str, str] | None = None  # (keys, lang) of an early switch erased by the user
+        self._selection_memo: tuple[str, float] | None = None  # selection left as is: a second press swaps it
+        self._deferred: str | None = None  # a hotkey waiting for its modifiers to be released
         self.mods: set[str] = set()
         self._tap_mod: str | None = None          # modifier pressed alone, may become a tap
         self._tap_down_at = 0.0
@@ -146,6 +150,7 @@ class Controller:
         if name:
             self.run_hotkey(name)
             return
+        self._deferred = None  # another key came before the modifiers were let go
         if ev.key == "space" and self.mods & {"ctrl", "cmd"}:
             return  # the usual layout-switch shortcut on macOS: the cursor does not move
         if self.mods & {"ctrl", "cmd"} or ("alt" in self.mods and not ev.char):
@@ -165,6 +170,9 @@ class Controller:
     def _on_release(self, ev: KeyEvent, now: float) -> None:
         if ev.key in MODIFIERS:
             self.mods.discard(ev.key)
+            if not self.mods and self._deferred:
+                name, self._deferred = self._deferred, None
+                self._run_hotkey_now(name)
         if ev.key != self._tap_mod:
             return
         self._tap_mod = None
@@ -609,7 +617,17 @@ class Controller:
                 return name
         return None
 
+    # actions that copy, paste or retype: with Shift/Ctrl still held the app would get Ctrl+Shift+C
+    # (DevTools in a browser) or Ctrl+Backspace, so they wait until the modifiers are released
+    WAIT_FOR_RELEASE = {"convert_selection", "ai_fix"}
+
     def run_hotkey(self, name: str) -> None:
+        if name in self.WAIT_FOR_RELEASE and self.mods:
+            self._deferred = name
+            return
+        self._run_hotkey_now(name)
+
+    def _run_hotkey_now(self, name: str) -> None:
         log.debug("hotkey %s", name)
         if name == "toggle":
             self.enabled = not self.enabled
@@ -712,21 +730,85 @@ class Controller:
             self._keep_spelling(wrong, tok.lang, right)
 
     def convert_selection(self) -> None:
+        """Fix the selected text: Claude if connected, otherwise word by word (layout and typos).
+
+        Text that is already right is left alone; pressing again within a few seconds swaps the
+        layout of the selection anyway, as Punto does.
+        """
         text = self.backend.copy_selection()
         if not text:
             return
+        memo, self._selection_memo = self._selection_memo, None
+        if memo and memo[0] == text and self._now - memo[1] < 6.0:
+            converted, target = self._swap_layout(text)
+            self._paste_selection(text, converted, target, "selection_swap")
+            return
+        local = self._fix_words(text)
+        if self._ai_ready():
+            self._ai_fix_selection(text, fallback=local)
+        elif local != text:
+            self._paste_selection(text, local, text_lang(local.split()[-1]) if local.split() else None, "selection")
+        else:
+            self._selection_untouched(text)
+
+    def _swap_layout(self, text: str) -> tuple[str, str]:
         lang = text_lang(text)
         target = RU if lang in (EN, None) else EN
         if lang == "mixed":
             latin = sum(1 for ch in text if letter_lang(ch) == EN)
             cyr = sum(1 for ch in text if letter_lang(ch) == RU)
             target = RU if latin >= cyr else EN
-        converted = self.keyboard.convert_mixed(text, target)
-        self._switch_layout(target)
-        self.backend.paste_text(converted)
-        self.learner.profile.log_event("selection", app=self.app, typed_text=text[:200],
-                                       final_text=converted[:200], final_lang=target)
+        return self.keyboard.convert_mixed(text, target), target
+
+    def _fix_words(self, text: str) -> str:
+        """Word by word: switch only words typed in the wrong layout, then fix typos."""
+        parts = re.split(r"(\s+)", text)
+        words = [(i, part) for i, part in enumerate(parts) if part and not part.isspace()]
+        langs: dict[int, str] = {}
+        for i, part in words:  # first pass: each word on its own, with the words before it
+            lang = text_lang(part)
+            if lang in (EN, RU):
+                prev = [langs[j] for j, _ in words if j < i and j in langs][-3:]
+                parts[i], langs[i] = self._fix_word(part, lang, Context(app=self.app, prev_langs=prev))
+        for n, (i, part) in enumerate(words[:-1]):  # second pass: short words judged by the next one
+            j = words[n + 1][0]
+            if i in langs and j in langs and langs[i] == text_lang(part) and langs[j] != langs[i]:
+                parts[i], langs[i] = self._fix_word(part, langs[i], Context(app=self.app, next_lang=langs[j]))
+        return "".join(parts)
+
+    def _fix_word(self, word: str, lang: str, ctx: Context) -> tuple[str, str]:
+        strokes = self.keyboard.strokes(word, lang)
+        if not strokes:
+            return word, lang
+        d = self.engine.decide(strokes, lang, ctx, typed_text=word)
+        if d.action == "convert" and d.alt is not None and d.alt.source in ("lexicon", "personal", "abbrev"):
+            word, lang = d.text, d.target_lang  # never swap into gibberish: "RE;liable" is Claude's job
+        elif d.action == "fix_case":
+            word = d.text
+        if self.config.autocorrect:
+            start, end, core = core_of(word, lang)
+            if len(core) >= 3 and core.isalpha() and core[1:] == core[1:].lower() \
+                    and self.learner.profile.personal_zipf(core.lower(), lang) is None:
+                fix = self.speller.suggest(core.lower(), lang)
+                if fix:
+                    word = word[:start] + match_case(core, fix.word) + word[end:]
+        return word, lang
+
+    def _paste_selection(self, text: str, fixed: str, target: str | None, kind: str) -> None:
+        if target in (EN, RU):
+            self._switch_layout(target)
+        self.backend.paste_text(fixed)
+        self.learner.profile.log_event(kind, app=self.app, typed_text=text[:200], final_text=fixed[:200],
+                                       final_lang=target or "")
         self.reset("selection")
+
+    def _selection_untouched(self, text: str) -> None:
+        self.backend.restore_clipboard()
+        self._selection_memo = (text, self._now)
+        self.backend.notify("Выделенный текст выглядит правильно. Нажмите ещё раз, чтобы всё равно сменить раскладку.")
+
+    def _ai_ready(self) -> bool:
+        return self.ai is not None and getattr(self.ai, "has_credentials", lambda: True)()
 
     # -- AI ------------------------------------------------------------------
 
@@ -737,16 +819,14 @@ class Controller:
         return tokens
 
     def ai_fix(self) -> None:
-        if self.ai is None:
-            self.backend.notify("ИИ не настроен: задайте ANTHROPIC_API_KEY")
+        if not self._ai_ready():
+            self.backend.notify("Claude не подключён: вставьте ключ API в настройках Switcher")
             return
         tokens = self.phrase_tokens()
         if tokens:
             self._ai_fix_phrase(tokens)
-            return
-        text = self.backend.copy_selection()
-        if text:
-            self._ai_fix_selection(text)
+        else:
+            self.convert_selection()
 
     def _ai_fix_phrase(self, tokens: list[Token]) -> None:
         pieces = []
@@ -784,27 +864,39 @@ class Controller:
 
         self._run_async(work, lambda result: self.post(lambda: done(result)))
 
-    def _ai_fix_selection(self, text: str) -> None:
+    def _ai_fix_selection(self, text: str, fallback: str) -> None:
         pieces = []
-        for word in text.split(" "):
+        for word, delim in re.findall(r"(\S+)(\s*)", text):
             lang = text_lang(word)
-            en = self.keyboard.convert_mixed(word, EN) if lang else word
-            ru = self.keyboard.convert_mixed(word, RU) if lang else word
-            pieces.append({"screen": word, "en": en, "ru": ru, "delim": " "})
-        pieces[-1]["delim"] = ""
+            # the word as typed stays as is in its own layout: ";" in "RE;liable" is not a Russian "$"
+            en = word if lang in (EN, None) else self.keyboard.convert_mixed(word, EN)
+            ru = word if lang in (RU, None) else self.keyboard.convert_mixed(word, RU)
+            pieces.append({"screen": word, "en": en, "ru": ru, "delim": delim})
+        lead = text[:len(text) - len(text.lstrip())]
         app = self.app
+        self.backend.notify("Claude исправляет выделенный текст…")
 
         def work():
-            return self.ai.fix_phrase(pieces, style=self.learner.profile.get_meta("style_summary"), app=app)
+            # the user asked for this fix explicitly: typos may be corrected too
+            return self.ai.fix_phrase(pieces, style=self.learner.profile.get_meta("style_summary"), app=app,
+                                      typos=True)
 
         def done(result):
             if isinstance(result, Exception):
-                self.backend.notify(f"ИИ: {result}")
+                if fallback != text:
+                    self.backend.notify(f"Claude недоступен ({result}) — исправлено без него")
+                    self._paste_selection(text, fallback, None, "selection")
+                else:
+                    self.backend.notify(f"Claude: {result}")
+                    self.backend.restore_clipboard()
                 return
-            if result != text:
-                self.backend.paste_text(result)  # type: ignore[arg-type]
-                self._learn_from_ai(pieces, result)  # type: ignore[arg-type]
-            self.reset("ai_fix")
+            fixed = lead + result  # type: ignore[operator]
+            if fixed == text:
+                self._selection_untouched(text)
+                return
+            last = fixed.split()[-1] if fixed.split() else ""
+            self._paste_selection(text, fixed, text_lang(last), "ai_selection")
+            self._learn_from_ai(pieces, result)  # type: ignore[arg-type]
 
         self._run_async(work, lambda result: self.post(lambda: done(result)))
 

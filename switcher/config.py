@@ -13,7 +13,7 @@ class Hotkeys:
     # "double_shift" / "double_ctrl" = tap the key twice; otherwise pynput syntax, e.g.
     # "<ctrl>+<alt>+x" or "<pause>"; "" = off.  The settings window records them.
     convert_last: str = "double_shift"      # convert the last word / undo the last auto-switch
-    convert_selection: str = "<ctrl>+<alt>+c"
+    convert_selection: str = "<shift>+<pause>"  # fix the selected text (Claude if connected), like Punto
     ai_fix: str = "<ctrl>+<alt>+<space>"    # let Claude fix the current phrase or the selection
     toggle: str = "<ctrl>+<alt>+s"          # pause / resume auto-switching
 
@@ -68,6 +68,7 @@ class Config:
     learning: Learning = field(default_factory=Learning)
     ai: AI = field(default_factory=AI)
     updates: Updates = field(default_factory=Updates)
+    config_version: int = 1            # bumped when an update has to adjust saved settings
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,4 +102,25 @@ def load_config(path: Path | None = None) -> Config:
             pass
         return config
     data = json.loads(path.read_text(encoding="utf-8") or "{}")
-    return _merge(Config, data)
+    config = _merge(Config, data)
+    if _migrate(config, data):
+        try:
+            config.save(path)
+        except OSError:
+            pass
+    return config
+
+
+OLD_SELECTION_HOTKEY = "<ctrl>+<alt>+c"
+
+
+def _migrate(config: Config, data: dict[str, Any]) -> bool:
+    """Bring a config file from an older version up to date; True if something changed."""
+    if data.get("config_version", 0) >= 1:
+        return False
+    # 0.3.1: fixing the selection moved to Punto's Shift+Pause, unless the user chose their own key
+    hotkeys = vars(config.hotkeys)
+    if hotkeys["convert_selection"] == OLD_SELECTION_HOTKEY and "<shift>+<pause>" not in hotkeys.values():
+        config.hotkeys.convert_selection = "<shift>+<pause>"
+    config.config_version = 1
+    return True
