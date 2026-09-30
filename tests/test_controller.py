@@ -371,6 +371,12 @@ def test_typos_are_fixed_when_the_word_ends(make_screen, profile):
     assert [e["kind"] for e in profile.events(["spell"])] == ["spell", "spell", "spell"]
 
 
+def test_a_wrong_vowel_in_a_long_word(make_screen):
+    s = make_screen(layout=RU)
+    s.write("Здривствуйте, как дела ")
+    assert s.text == "Здравствуйте, как дела "
+
+
 def test_wrong_layout_and_typo_together(make_screen):
     s = make_screen(layout=EN)
     s.write("превет ", RU)  # keys of "превет" on the English layout

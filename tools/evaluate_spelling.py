@@ -104,10 +104,9 @@ def main():
     print("default tuning:")
     run(speller, sets, typos, verbose=True)
     if args.sweep:
-        for known_extra, first_change, lead in [(0.3, 0.4, 1.0), (0.3, 0.2, 0.8), (0.45, 0.2, 0.8), (0.0, 0.4, 1.0)]:
-            speller.tuning = replace(SpellTuning(), known_extra=known_extra, cost_first_change=first_change,
-                                     lead=lead)
-            print(f"known_extra={known_extra} first_change={first_change} lead={lead}")
+        for vowel, long_max in [(2.2, 0.6), (1.2, 0.6), (1.6, 0.6), (1.4, 1.0)]:
+            speller.tuning = replace(SpellTuning(), cost_vowel=vowel, long_bonus_max=long_max)
+            print(f"cost_vowel={vowel} long_bonus_max={long_max}")
             run(speller, sets, typos)
 
 

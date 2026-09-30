@@ -31,6 +31,8 @@ _SOUND_ALIKE = {
     RU: ["ао", "еи", "ея", "иы", "еэ", "зс", "дт", "бп", "вф", "гк", "жш", "шщ", "ьъ", "цс", "юу"],
     EN: ["ae", "ai", "ei", "iy", "ou", "ao", "ck", "sc", "sz"],
 }
+# Unstressed vowels are the most common spelling slip in Russian ("здривствуйте").
+_VOWELS = {RU: set("аеёиоуыэюя"), EN: set("aeiou")}
 _WORD = {EN: re.compile(r"[a-z]+"), RU: re.compile(r"[а-яё]+")}
 
 
@@ -51,6 +53,7 @@ class SpellTuning:
     cost_double: float = 0.6        # "untill" → "until", "расчитать" → "рассчитать"
     cost_drop: float = 1.0          # "спсибо" → "спасибо"
     cost_extra: float = 1.0         # "приветт" → "привет"
+    cost_vowel: float = 1.4         # a vowel for another vowel: "здривствуйте" → "здравствуйте"
     cost_other: float = 2.2         # any other letter
     cost_first: float = 1.0         # extra for adding or dropping the first letter: people rarely slip there
     cost_first_change: float = 0.4  # extra for changing the first letter
@@ -108,7 +111,7 @@ class Speller:
         """Every word one edit away, with the cheapest way to get there."""
         t = self.tuning
         letters = self.letters[lang]
-        near, sound = self.near[lang], self.sound[lang]
+        near, sound, vowels = self.near[lang], self.sound[lang], _VOWELS[lang]
         found: dict[str, tuple[float, str]] = {}
 
         def add(candidate: str, cost: float, kind: str) -> None:
@@ -139,6 +142,8 @@ class Speller:
                     cost, kind = t.cost_near, "near"
                 elif other in sound.get(ch, ()):
                     cost, kind = t.cost_sound, "sound"
+                elif ch in vowels and other in vowels:
+                    cost, kind = t.cost_vowel, "vowel"
                 else:
                     cost, kind = t.cost_other, "other"
                 cost += t.cost_first_change if i == 0 else place(i)
