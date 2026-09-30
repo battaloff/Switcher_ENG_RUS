@@ -249,6 +249,40 @@ def test_cached_list_is_reused_until_it_is_old(monkeypatch):
     assert len(fetched) == 3
 
 
+def test_running_app_announces_a_new_version_once(monkeypatch):
+    class Stop:
+        """Lets the check loop run ``rounds`` times, as if that much time had passed."""
+
+        def __init__(self, rounds):
+            self.rounds, self.waits = rounds, []
+
+        def wait(self, delay):
+            self.waits.append(delay)
+            self.rounds -= 1
+            return self.rounds < 0
+
+    newer = SimpleNamespace(version="9.0.0", relation="newer", prerelease=False, notes=["Новое: что-то"])
+    checks, notes = [], []
+    fake = SimpleNamespace(profile=Meta(), backend=SimpleNamespace(notify=notes.append),
+                           config=SimpleNamespace(updates=SimpleNamespace(check_automatically=True)))
+
+    def check_updates(force=False):
+        checks.append(time.time())
+        fake.profile.values["update_checked_at"] = str(time.time())
+        return [newer]
+
+    fake.check_updates = check_updates
+    fake.stop_event = Stop(3)
+    App._auto_check_updates(fake)
+    assert len(checks) == 1  # due at the start; then not again within CHECK_EVERY
+    assert notes == ["Вышла версия 9.0.0: Новое: что-то. Обновить: Настройки → Обновления."]
+    assert fake.stop_event.waits == [20.0, updater.CHECK_TICK, updater.CHECK_TICK, updater.CHECK_TICK]
+    fake.profile.values["update_checked_at"] = str(time.time() - updater.CHECK_EVERY - 1)
+    fake.stop_event = Stop(1)
+    App._auto_check_updates(fake)
+    assert len(checks) == 2 and len(notes) == 1  # checked again hours later, but told only once
+
+
 def test_changelog_documents_the_current_version():
     import importlib.util
 

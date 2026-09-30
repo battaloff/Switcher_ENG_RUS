@@ -31,7 +31,9 @@ log = logging.getLogger(__name__)
 
 DEFAULT_REPO = "battaloff/Switcher_ENG_RUS"
 ASSET_RE = re.compile(r"^SwitcherSetup-(\d+(?:\.\d+){1,3})\.exe$", re.IGNORECASE)
-CHECK_EVERY = 12 * 3600  # automatic checks, seconds
+CHECK_EVERY = 3 * 3600  # automatic checks, seconds: a new release is announced the same day
+CHECK_TICK = 600  # how often the running app looks whether a check is due
+CHECK_RETRY = 1800  # after a failed check (offline)
 USER_AGENT = f"Switcher/{__version__} (+https://github.com/{DEFAULT_REPO})"
 
 

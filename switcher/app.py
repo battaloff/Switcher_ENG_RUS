@@ -166,23 +166,28 @@ class App:
         return releases
 
     def _auto_check_updates(self) -> None:
+        """Soon after the start and then every few hours while running: announce a new version once."""
         from . import updater
 
-        if self.stop_event.wait(20) or not self.config.updates.check_automatically:
-            return
-        last = float(self.profile.get_meta("update_checked_at", "0") or 0)
-        if time.time() - last < updater.CHECK_EVERY:
-            return
-        try:
-            releases = self.check_updates(force=True)
-        except updater.UpdateError as exc:
-            log.info("update check failed: %s", exc)
-            return
-        newest = next((r for r in releases if r.relation == "newer" and not r.prerelease), None)
-        if newest and self.profile.get_meta("update_announced") != newest.version:
-            self.profile.set_meta("update_announced", newest.version)
-            what = f": {newest.notes[0]}" if newest.notes else ""
-            self.backend.notify(f"Вышла версия {newest.version}{what}. Обновить: Настройки → Обновления.")
+        delay = 20.0
+        while not self.stop_event.wait(delay):
+            delay = updater.CHECK_TICK
+            if not self.config.updates.check_automatically:
+                continue
+            last = float(self.profile.get_meta("update_checked_at", "0") or 0)
+            if time.time() - last < updater.CHECK_EVERY:
+                continue
+            try:
+                releases = self.check_updates(force=True)
+            except updater.UpdateError as exc:
+                log.info("update check failed: %s", exc)
+                delay = updater.CHECK_RETRY
+                continue
+            newest = next((r for r in releases if r.relation == "newer" and not r.prerelease), None)
+            if newest and self.profile.get_meta("update_announced") != newest.version:
+                self.profile.set_meta("update_announced", newest.version)
+                what = f": {newest.notes[0]}" if newest.notes else ""
+                self.backend.notify(f"Вышла версия {newest.version}{what}. Обновить: Настройки → Обновления.")
 
     def install_update(self, release, setup) -> None:
         """Reinstall from ``setup`` (a newer or an older version) and quit; the helper starts us again."""
