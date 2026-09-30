@@ -20,7 +20,8 @@ from typing import Callable, Protocol
 
 from .config import Config
 from .engine import Context, Decision, Engine, decide_prefix
-from .layouts import EN, RU, Keyboard, Stroke, canonical_keys, harmonize_case, letter_lang, other, text_lang
+from .layouts import (EN, RU, Keyboard, Stroke, canonical_keys, fix_two_capitals, harmonize_case, letter_lang,
+                      other, text_lang)
 from .learner import Learner, core_of, levenshtein
 from .speller import Speller
 
@@ -402,6 +403,8 @@ class Controller:
             if tok.change == "" and can_change and self.config.learning.typo_rules:
                 self._apply_replace_rule(tok)
         if can_change and tok.change in ("", "convert"):
+            self._apply_two_capitals(tok)
+        if can_change and tok.change in ("", "convert", "case"):
             self._apply_spelling(tok)
 
         self.learner.committed(app=self.app, lang=tok.lang, text=tok.text, decision=tok.decision,
@@ -517,6 +520,37 @@ class Controller:
         tok.original_text, tok.text, tok.change = tok.text, new_text, "replace"
         self.undo_target = tok
         self.learner.replace_applied(app=self.app, wrong=core, right=right)
+
+    def _two_capitals(self, core: str, lang: str) -> str | None:
+        """The word with its second capital made small, when that is surely what was meant."""
+        if not self.config.fix_two_capitals or lang not in (EN, RU):
+            return None
+        fixed = fix_two_capitals(core)
+        if fixed is None:
+            return None
+        word = core.lower()
+        if word in _KEEP_TWO_CAPITALS or self.learner.profile.get_rule("case", word) is not None:
+            return None  # "ВКонтакте", or a word the user put back with double Shift
+        zipf = self.speller.zipf(word, lang)
+        if zipf is not None and zipf >= (5.0 if len(word) <= 3 else 3.0):
+            return fixed  # "THe", "ПРивет"; but not "IDs", "PCs" (short and not that common) or "VMware"
+        if len(word) > 3 and core.isalpha() and self.config.autocorrect and self.speller.suggest(word, lang):
+            return fixed  # "ЗДривствуйте": the typo gets fixed next
+        return None
+
+    def _apply_two_capitals(self, tok: Token) -> None:
+        """"ЗДравствуйте" → "Здравствуйте" once the word is finished."""
+        start, end, core = core_of(tok.text, tok.lang)
+        fixed = self._two_capitals(core, tok.lang)
+        if fixed is None:
+            return
+        new_text = tok.text[:start] + fixed + tok.text[end:]
+        self._rewrite(len(tok.text) + len(tok.delim), new_text + tok.delim)
+        if tok.change == "":
+            tok.original_text, tok.change = tok.text, "case"
+        tok.text = new_text
+        self.undo_target = tok
+        self.learner.case_fixed(app=self.app, wrong=core, right=fixed, lang=tok.lang)
 
     def _sentence_start(self) -> bool:
         if not self.history:
@@ -733,6 +767,10 @@ class Controller:
             _, _, wrong = core_of(tok.text, tok.lang)
             _, _, right = core_of(converted_text, converted_lang)
             self._keep_spelling(wrong, tok.lang, right)
+        elif change == "case":
+            _, _, typed = core_of(tok.text, tok.lang)
+            _, _, fixed = core_of(converted_text, converted_lang)
+            self.learner.case_undone(app=self.app, typed=typed, fixed=fixed, lang=tok.lang)
 
     def convert_selection(self, ask_claude: bool = False) -> None:
         """Fix the selected text word by word (layout and typos); what that cannot fix goes to Claude.
@@ -819,6 +857,10 @@ class Controller:
             word, lang = d.text, d.target_lang  # never swap into gibberish: "RE;liable" is Claude's job
         elif d.action == "fix_case":
             word = d.text
+        start, end, core = core_of(word, lang)
+        fixed = self._two_capitals(core, lang) if d.action != "fix_case" else None
+        if fixed:
+            word = word[:start] + fixed + word[end:]
         if self.config.autocorrect:
             start, end, core = core_of(word, lang)
             if len(core) >= 3 and core.isalpha() and core[1:] == core[1:].lower() \
@@ -965,6 +1007,10 @@ class Controller:
             done(result)
 
         threading.Thread(target=runner, daemon=True).start()
+
+
+# Spelt with two capitals on purpose, and common enough to be in the dictionary.
+_KEEP_TWO_CAPITALS = {"вконтакте", "iphone", "ipad", "ipod"}
 
 
 def match_case(template: str, word: str) -> str:

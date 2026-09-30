@@ -25,6 +25,8 @@ def rule_rows(profile: Profile, keyboard: Keyboard) -> list[dict]:
     for r in profile.rules():
         if r.kind == "layout":
             result = "всегда по-английски" if r.value == "en" else "всегда по-русски"
+        elif r.kind == "case":
+            result = "не исправлять заглавные"
         else:
             result = f"заменять на «{r.value}»"
         rows.append({

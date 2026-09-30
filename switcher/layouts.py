@@ -162,6 +162,21 @@ def harmonize_case(src: str, dst: str) -> str:
     return dst
 
 
+def fix_two_capitals(word: str) -> str | None:
+    """"ЗДравствуйте" → "Здравствуйте": Shift was let go one letter too late.
+
+    Only the shape is checked here (two capitals, then small letters only); whether the word is a
+    real one and not a name spelt that way ("VMware", "IDs") is up to the caller.
+    """
+    letters = [i for i, ch in enumerate(word) if ch.isalpha()]
+    if len(letters) < 3:
+        return None
+    first, second = letters[0], letters[1]
+    if word[first].isupper() and word[second].isupper() and all(word[i].islower() for i in letters[2:]):
+        return word[:second] + word[second].lower() + word[second + 1:]
+    return None
+
+
 def canonical_keys(strokes: Iterable[Stroke]) -> str:
     """Case-insensitive identity of a key sequence (used as a rule key)."""
     return "".join(s.code for s in strokes)

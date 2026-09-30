@@ -1,5 +1,6 @@
 from switcher.config import Config
 from switcher.layouts import EN, RU
+from switcher.report import rule_rows
 
 
 def test_wrong_layout_word_is_fixed_on_space(make_screen):
@@ -536,3 +537,48 @@ def test_selection_hotkey_waits_until_shift_is_released(make_screen):
     assert s.text == "Ghbdtn"  # Ctrl+C now would reach the app as Ctrl+Shift+C
     s._event("release", "shift")
     assert s.text == "Привет"
+
+
+def test_two_capitals_are_fixed(make_screen):
+    for keys, layout, expected in [("PLhfdcndeqnt ", RU, "Здравствуйте "), ("GHbdtn ", EN, "Привет "),
+                                   ("HEllo ", EN, "Hello "), ("THe ", EN, "The "),
+                                   ("PLhbdcndeqnt ", RU, "Здравствуйте ")]:  # the typo is fixed as well
+        s = make_screen(layout=layout)
+        s.keys(keys)
+        assert s.text == expected, keys
+
+
+def test_names_spelt_with_two_capitals_are_left_alone(make_screen):
+    for word in ("PCs ", "IDs ", "OK ", "VMware ", "OAuth ", "IPhone "):
+        s = make_screen(layout=EN)
+        s.keys(word)
+        assert s.text == word
+
+
+def test_double_shift_puts_two_capitals_back_for_good(make_screen, profile):
+    s = make_screen(layout=EN)
+    s.keys("HEllo ")
+    assert s.text == "Hello "
+    s.double_shift()
+    assert s.text == "HEllo "
+    assert profile.get_rule("case", "hello").value == "HEllo"
+    row = next(r for r in rule_rows(profile, s.kb) if r["rule"].kind == "case")
+    assert row["word"] == "HEllo" and "заглавные" in row["result"]
+    s.keys("HEllo ")
+    assert s.text == "HEllo HEllo "
+
+
+def test_two_capitals_can_be_switched_off(make_screen):
+    config = Config()
+    config.fix_two_capitals = False
+    s = make_screen(config, layout=RU)
+    s.keys("GHbdtn ")
+    assert s.text == "ПРивет "
+
+
+def test_two_capitals_in_the_selection(make_screen):
+    ai = FakeAI("не понадобится")
+    s = make_screen(layout=EN, ai=ai)
+    select(s, "ЗДравствуйте ПРивет")
+    s.controller.convert_selection()
+    assert s.text == "Здравствуйте Привет" and ai.calls == []

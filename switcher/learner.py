@@ -196,6 +196,19 @@ class Learner:
         self.profile.bump_vocab(lang, wrong.lower(), self.profile.min_vocab_count)
         self._feedback()
 
+    def case_fixed(self, *, app: str, wrong: str, right: str, lang: str) -> None:
+        if self.config.enabled:
+            self.profile.log_event("case", app=app, typed_lang=lang, final_lang=lang, typed_text=wrong,
+                                   final_text=right)
+
+    def case_undone(self, *, app: str, typed: str, fixed: str, lang: str) -> None:
+        """The two capitals were meant ("VMware"): never touch this word's case again."""
+        self.profile.log_event("case_undo", app=app, typed_lang=lang, final_lang=lang, typed_text=typed,
+                               final_text=typed, detail={"was": fixed})
+        self.profile.add_rule("case", typed.lower(), typed, source="learned",
+                              note=f"вы вернули «{typed}» после исправления на «{fixed}»")
+        self._feedback()
+
     def replace_applied(self, *, app: str, wrong: str, right: str) -> None:
         self.profile.rule_used("replace", wrong.lower(), app)
         self.profile.log_event("replace", app=app, typed_text=wrong, final_text=right)

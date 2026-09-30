@@ -269,6 +269,8 @@ class Assistant:
 def rule_word(rule, keyboard: Keyboard) -> str:
     if rule.kind == "replace":
         return rule.pattern
+    if rule.kind == "case":
+        return rule.value
     return keyboard.text([Stroke(code) for code in rule.pattern], rule.value)
 
 
