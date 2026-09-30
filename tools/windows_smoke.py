@@ -230,9 +230,9 @@ def main() -> int:
         time.sleep(2.0)
 
     layout(EN)
-    select("ghbdtn? rfr ltkf")
+    select("vfibyf? rfr ltkf")  # not "ghbdtn": the undo above taught to keep that one as typed
     shift_pause()
-    check("Shift+Pause fixes the selected text", "привет, как дела")
+    check("Shift+Pause fixes the selected text", "машина, как дела")
     layout(EN)
     select("shift+pause")
     shift_pause()
