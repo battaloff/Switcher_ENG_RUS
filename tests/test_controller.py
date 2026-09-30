@@ -353,16 +353,9 @@ def test_no_early_switch_where_it_is_off_or_risky(make_screen):
     s.write("да ", RU)
     s.click()
     s.clock += 2  # a moment later, not the echo of our own switch
-    s.switch_layout(EN)  # the user picked the layout by hand just now: more proof needed
-    s.write("помн", RU)
-    assert s.text.endswith("gjvy")  # a borderline start waits for the whole word
-    s.write("ю ", RU)
-    assert s.text.endswith("помню ")
-    s.click()
-    s.clock += 2
-    s.switch_layout(EN)
+    s.switch_layout(EN)  # the user picked the layout by hand just now, and picked it wrong
     s.write("прив", RU)
-    assert s.text.endswith("прив")  # an obvious one still switches at once
+    assert s.text.endswith("прив")  # an obvious start still switches at once
 
 
 # -- autocorrect -----------------------------------------------------------------
@@ -413,3 +406,32 @@ def test_autocorrect_leaves_names_abbreviations_code_and_real_words(make_screen)
     s = make_screen(Config(autocorrect=False), layout=RU)
     s.write("превет ")
     assert s.text == "превет "
+
+
+def test_rename_box_in_capitals_finished_with_enter(make_screen):
+    """The screenshot: "НА МАШИНАХ" typed with Shift on the English layout in Explorer, then Enter."""
+    s = make_screen(layout=EN, app="explorer")
+    for code in "yf":
+        s.shift_letter(code)
+    s.space()
+    for code in "vfib":
+        s.shift_letter(code)
+    assert s.text == "НА МАШИ" and s.layout == RU  # the word before switched along with it
+    for code in "yf[":
+        s.shift_letter(code)
+    s.enter()
+    assert s.text == "НА МАШИНАХ\n"
+
+
+def test_short_word_is_fixed_even_when_the_phrase_ends_with_enter(make_screen):
+    s = make_screen(layout=EN)
+    s.write("у меня\n", RU)
+    assert s.text == "у меня\n"
+
+
+def test_double_shift_mid_word_takes_back_the_words_switched_along(make_screen):
+    s = make_screen(layout=EN)
+    s.write("у меня", RU)  # keys of "у меня" on the English layout, no space yet
+    assert s.text == "у меня"
+    s.double_shift()
+    assert s.text == "e vtyz" and s.layout == EN

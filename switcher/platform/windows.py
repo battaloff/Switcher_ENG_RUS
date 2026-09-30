@@ -7,6 +7,7 @@ import os
 import time
 from ctypes import wintypes
 
+from ..controller import KeyEvent
 from ..layouts import EN, RU, Stroke
 from .base import BaseBackend
 
@@ -75,6 +76,7 @@ class WindowsBackend(BaseBackend):
         self._hkls: dict[str, int] = {}
         self._app_cache: tuple[int, float, str] = (0, 0.0, "")
         self._pending_layout: tuple[str | None, float] = (None, 0.0)
+        self._watchdog = None
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -161,7 +163,45 @@ class WindowsBackend(BaseBackend):
         return "char", real, code
 
     def _listener_options(self) -> dict:
-        return {"win32_event_filter": lambda msg, data: (data.dwExtraInfo or 0) != OWN_INPUT}
+        return {"win32_event_filter": self._hook_filter}
+
+    def _hook_filter(self, msg, data) -> bool:
+        """Runs in the hook for every key: tells the watchdog the hook is alive, drops our own keys."""
+        watchdog = self._watchdog
+        if watchdog is not None:
+            watchdog.hook_saw_event()
+        return (data.dwExtraInfo or 0) != OWN_INPUT
+
+    def start(self, sink) -> None:
+        super().start(sink)
+        from .win_watchdog import HookWatchdog
+
+        self._watchdog = HookWatchdog(self._restart_keyboard_hook)
+        self._watchdog.start()
+
+    def stop(self) -> None:
+        if self._watchdog is not None:
+            self._watchdog.stop()
+            self._watchdog = None
+        super().stop()
+
+    def _restart_keyboard_hook(self) -> None:
+        """Replace the keyboard listener whose hook Windows removed; what was typed meanwhile is unknown."""
+        with self._lock:
+            if not self._listeners:
+                return
+            old = self._listeners[0]
+            try:
+                old.stop()
+            except Exception:
+                pass
+            listener = self._pk.Listener(on_press=self._on_press, on_release=self._on_release,
+                                         **self._listener_options())
+            listener.daemon = True
+            listener.start()
+            self._listeners[0] = listener
+        if self._sink:
+            self._sink(KeyEvent("press", "hook-restored", app=self.active_app(), time=time.monotonic()))
 
     @staticmethod
     def _send(keys: list[tuple[int, int, int]]) -> None:

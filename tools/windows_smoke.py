@@ -215,6 +215,28 @@ def main() -> int:
     print(f"{'OK  ' if rule else 'FAIL'} rule learned from the undo: {rule}")
     results.append(bool(rule))
 
+    # Windows silently removes a hook that once answers too slowly; do the same and expect a recovery
+    from pynput._util.win32 import SystemHook
+
+    watchdog = app.backend._watchdog
+    print(f"{'OK  ' if watchdog and watchdog.running else 'FAIL'} hook watchdog is running")
+    results.append(bool(watchdog and watchdog.running))
+    hook = SystemHook._HOOKS[app.backend._listeners[0].ident]
+    user32.UnhookWindowsHookEx.argtypes = (wintypes.HHOOK,)
+    removed = user32.UnhookWindowsHookEx(hook._hook)
+    print(f"   keyboard hook removed behind Switcher's back: {bool(removed)}")
+    clear()
+    layout(EN)
+    type_keys("asdf")  # only Raw Input hears these now
+    time.sleep(1.0)
+    print(f"{'OK  ' if watchdog.restarts else 'FAIL'} watchdog noticed and reinstalled the hook: "
+          f"{watchdog.restarts} time(s)")
+    results.append(watchdog.restarts >= 1)
+    clear()
+    layout(EN)
+    type_keys("ghbdtn ")
+    check("keys are heard again after Windows dropped the hook", "привет ")
+
     app.stop_event.set()
     runner.join(timeout=5)
     notepad.kill()

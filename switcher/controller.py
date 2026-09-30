@@ -255,11 +255,21 @@ class Controller:
                 or cur.chars[0] in "'\"`~<{"):
             return
         decision = decide_prefix(self.engine, cur.strokes, cur.typed_lang, self._context(self.history))
-        if decision.switch:
-            self._switch_layout(decision.target_lang)
-            self._rewrite(len(cur.chars), decision.text)
-            cur.early_from = cur.typed_lang
-            cur.chars, cur.typed_lang = list(decision.text), decision.target_lang
+        if not decision.switch:
+            return
+        # Short words before it are judged now too: in a rename box or a chat the word may end
+        # with Enter, and then there is no later chance ("YF VFIB…" → "НА МАШИ…").
+        group = self._look_back(cur, decision.target_lang) if self.config.look_back else []
+        old = "".join(t.text + t.delim for t, _ in group) + cur.typed_text
+        for t, td in group:
+            t.original_text, t.text, t.lang, t.change, t.decision = t.text, td.text, td.target_lang, "convert", td
+        self._switch_layout(decision.target_lang)
+        self._rewrite(len(old), "".join(t.text + t.delim for t, _ in group) + decision.text)
+        cur.group = [t for t, _ in group]
+        cur.early_from = cur.typed_lang
+        cur.chars, cur.typed_lang = list(decision.text), decision.target_lang
+        for t, td in group:
+            self.learner.committed(app=self.app, lang=t.lang, text=t.text, decision=td, changed_from=t.original_text)
 
     def _retyping_erased(self, cur: Token) -> bool:
         """The user erased a finished word and is typing the same keys again."""
@@ -326,9 +336,11 @@ class Controller:
 
     def _context(self, prev: list[Token]) -> Context:
         careful = self._careful()
+        last = [ch for ch in prev[-1].text if ch.isalpha()] if prev else []
         return Context(
             app=self.app,
             prev_langs=[t.lang for t in prev[-3:] if t.lang in (EN, RU)],
+            caps_phrase=len(last) >= 2 and all(ch.isupper() for ch in last),
             manual_switch=self._now - self._manual_switch_at < 3.0,
             extra_threshold=self.config.careful_extra if careful else 0.0,
         )
@@ -399,12 +411,19 @@ class Controller:
             keep = d.reason != "model" or d.margin >= 0  # the whole word still reads better switched
         tok.typed_lang = source
         if not keep and allow_change:
+            # the words switched along with it go back too
+            old = "".join(t.text + t.delim for t in tok.group) + screen + tok.delim
+            for t in tok.group:
+                t.text, t.lang, t.change = t.original_text, t.typed_lang, ""
             self._switch_layout(source)
-            self._rewrite(len(screen) + len(tok.delim), original + tok.delim)
-            tok.text, tok.lang = original, source
+            self._rewrite(len(old), "".join(t.text + t.delim for t in tok.group) + original + tok.delim)
+            tok.text, tok.lang, tok.group = original, source, []
             self.learner.early_reverted(app=self.app, typed_text=original, typed_lang=source, shown_text=screen)
             return
         tok.original_text, tok.lang, tok.change = original, target, "convert"
+        if tok.group:  # the words before were switched together with the first letters
+            self.undo_target = tok
+            return
         group = self._look_back(tok, target) if self.config.look_back and allow_change else []
         if group:
             old = "".join(t.text + t.delim for t, _ in group) + screen + tok.delim
@@ -622,12 +641,19 @@ class Controller:
                 return
             target = other(cur.typed_lang)
             new = self.keyboard.text(cur.strokes, target)
+            if cur.early_from == target:
+                # our early switch was wrong: back to what the user typed (with the words switched
+                # along with it), and remember the word
+                old = "".join(t.text + t.delim for t in cur.group) + cur.typed_text
+                for t in cur.group:
+                    t.text, t.lang, t.change = t.original_text, t.typed_lang, ""
+                self._switch_layout(target)
+                self._rewrite(len(old), "".join(t.text + t.delim for t in cur.group) + new)
+                cur.chars, cur.typed_lang, cur.early_from, cur.early_undone = list(new), target, None, True
+                cur.group = []
+                return
             self._switch_layout(target)
             self._rewrite(len(cur.chars), new)
-            if cur.early_from == target:
-                # our early switch was wrong: back to what the user typed, and remember the word
-                cur.chars, cur.typed_lang, cur.early_from, cur.early_undone = list(new), target, None, True
-                return
             if cur.manual_from is None:
                 cur.manual_from = cur.typed_lang
             elif cur.manual_from == target:

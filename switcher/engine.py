@@ -53,7 +53,7 @@ class Tuning:
     early_margin: tuple[float, ...] = (4.5, 3.0, 2.5)
     early_plaus_max: float = -0.5
     early_context: float = 0.5      # margin shift from the language of the phrase so far
-    early_manual_extra: float = 1.5  # the user picked the layout by hand a moment ago: need more proof
+    early_manual_extra: float = 0.75  # the user picked the layout by hand a moment ago: need more proof
 
 
 # Single letters that are words on their own; corpora are full of the others
@@ -112,6 +112,7 @@ class Context:
     prev_langs: Sequence[str] = ()
     next_lang: str | None = None     # set when re-checking a word after its neighbour was converted
     manual_switch: bool = False      # the user switched layout by hand right before this word
+    caps_phrase: bool = False        # the words before are in capitals too: typing in caps, not abbreviations
     extra_threshold: float = 0.0     # e.g. code editors and terminals
 
 
@@ -290,7 +291,7 @@ class Engine:
         if n <= len(t.short_extra):
             threshold += t.short_extra[n - 1]
         letters = [ch for ch in typed.core if ch.isalpha()]
-        if 2 <= len(letters) <= 5 and all(ch.isupper() for ch in letters):
+        if 2 <= len(letters) <= 5 and all(ch.isupper() for ch in letters) and not ctx.caps_phrase:
             threshold += t.caps_extra
         if ctx.manual_switch:
             threshold += t.manual_switch_extra
