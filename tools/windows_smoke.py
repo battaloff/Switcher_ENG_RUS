@@ -234,8 +234,8 @@ def main() -> int:
     results.append(watchdog.restarts >= 1)
     clear()
     layout(EN)
-    type_keys("ghbdtn ")
-    check("keys are heard again after Windows dropped the hook", "привет ")
+    type_keys("rfr ltkf ")  # not "ghbdtn": the undo above taught to keep that one as typed
+    check("keys are heard again after Windows dropped the hook", "как дела ")
 
     app.stop_event.set()
     runner.join(timeout=5)
