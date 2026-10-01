@@ -113,6 +113,7 @@ class Controller:
         self.undo_target: Token | None = None
         self.manual_target: tuple[Token, str, tuple[str, str] | None, float] | None = None
         self.early_rejected: tuple[str, str] | None = None  # (keys, lang) of an early switch erased by the user
+        self._selection_unsure = False  # the selection fix made a bold guess
         self._selection_memo: tuple[str, float] | None = None  # selection left as is: a second press swaps it
         self._deferred: str | None = None  # a hotkey waiting for its modifiers to be released
         self.mods: set[str] = set()
@@ -853,8 +854,9 @@ class Controller:
             converted, target = self._swap_layout(text)
             self._paste_selection(text, converted, target, "selection_swap")
             return
+        self._selection_unsure = False
         local = self._fix_words(text)
-        known = self._all_known(local)
+        known = self._all_known(local) and not self._selection_unsure
         if self._ai_ready() and (ask_claude or not known):
             self._ai_fix_selection(text, fallback=local)
         elif local != text:
@@ -929,14 +931,17 @@ class Controller:
         fixed = self._two_capitals(core, lang) if d.action != "fix_case" else None
         if fixed:
             word = word[:start] + fixed + word[end:]
-        if self.config.autocorrect:
-            start, end, core = core_of(word, lang)
-            uzbek = self.config.writes_uzbek and (uzbek_phrase or looks_uzbek(core))
-            if len(core) >= 3 and core.isalpha() and core[1:] == core[1:].lower() and not uzbek \
-                    and self.learner.profile.personal_zipf(core.lower(), lang) is None:
-                fix = self.speller.suggest(core.lower(), lang)
-                if fix:
-                    word = word[:start] + match_case(core, fix.word) + word[end:]
+        # typos too, even with autocorrect off: the user asked for this text to be fixed
+        start, end, core = core_of(word, lang)
+        uzbek = self.config.writes_uzbek and (uzbek_phrase or looks_uzbek(core))
+        if len(core) >= 3 and core.isalpha() and core[1:] == core[1:].lower() and not uzbek \
+                and self.learner.profile.personal_zipf(core.lower(), lang) is None:
+            fix = self.speller.suggest(core.lower(), lang)
+            if fix is None:
+                fix = self.speller.suggest(core.lower(), lang, eager=True)
+                self._selection_unsure |= fix is not None  # a bolder guess: Claude, if there, has the last word
+            if fix:
+                word = word[:start] + match_case(core, fix.word) + word[end:]
         return word, lang
 
     def _paste_selection(self, text: str, fixed: str, target: str | None, kind: str) -> None:

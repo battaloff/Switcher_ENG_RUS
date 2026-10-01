@@ -13,13 +13,14 @@ slang such as "щас" or "ваще" is either common enough or too far from any
 
 Measured with tools/evaluate_spelling.py: 0.03% of frequent words typed right
 get changed (rare real words; an undo protects them for good), 72% of typical
-single-slip typos get fixed.
+single-slip typos get fixed.  Fixing a selection the user asked to fix
+(Shift+Pause) may be bolder: 79% of typos, 0.09% of frequent words.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .langmodel import ALPHABETS, Models
 from .layouts import EN, RU, Keyboard, Stroke
@@ -70,6 +71,10 @@ class Correction:
     edit: str
 
 
+# For text the user explicitly asked to fix: a smaller lead over the typed word is enough.
+EAGER = {"gap": 1.0, "min_candidate": 2.5}
+
+
 class Speller:
     def __init__(self, models: Models, keyboard: Keyboard, tuning: SpellTuning | None = None):
         self.models = models
@@ -107,9 +112,9 @@ class Speller:
                 z = plain
         return z
 
-    def candidates(self, word: str, lang: str) -> dict[str, tuple[float, str]]:
+    def candidates(self, word: str, lang: str, tuning: SpellTuning | None = None) -> dict[str, tuple[float, str]]:
         """Every word one edit away, with the cheapest way to get there."""
-        t = self.tuning
+        t = tuning or self.tuning
         letters = self.letters[lang]
         near, sound, vowels = self.near[lang], self.sound[lang], _VOWELS[lang]
         found: dict[str, tuple[float, str]] = {}
@@ -158,9 +163,12 @@ class Speller:
                     add(word[:i] + other + word[i:], t.cost_drop + extra, "missing")
         return found
 
-    def suggest(self, word: str, lang: str) -> Correction | None:
-        """The fix for ``word`` (lower case, letters only), or None to leave it."""
-        t = self.tuning
+    def suggest(self, word: str, lang: str, eager: bool = False) -> Correction | None:
+        """The fix for ``word`` (lower case, letters only), or None to leave it.
+
+        ``eager``: the user asked for this text to be fixed, so a smaller lead will do.
+        """
+        t = replace(self.tuning, **EAGER) if eager else self.tuning
         if len(word) < t.min_length or not _WORD[lang].fullmatch(word):
             return None
         typed = self.zipf(word, lang)
@@ -169,7 +177,7 @@ class Speller:
         typed_score = max(typed, t.unknown_score) if typed is not None else t.unknown_score
         scored = []
         lexicon = self.models[lang].lexicon
-        for candidate, (cost, kind) in self.candidates(word, lang).items():
+        for candidate, (cost, kind) in self.candidates(word, lang, t).items():
             z = lexicon.zipf(candidate)  # exact: "фиолетовыё" is not "фиолетовые"
             if z is not None and z >= t.min_candidate:
                 scored.append((z - cost, z, candidate, kind))
@@ -181,6 +189,6 @@ class Speller:
         need = t.gap + (t.short_extra if len(word) <= 3 else 0.0) \
             - min(t.long_bonus_max, t.long_bonus * max(0, len(word) - 6)) \
             + t.known_extra * max(0.0, typed_score - 2.0)
-        if best - typed_score < need or best - runner_up < t.lead:
+        if best - typed_score < need - 1e-9 or best - runner_up < t.lead - 1e-9:  # 3.4 - 1.0 - 1.5 is 0.8999…
             return None
         return Correction(candidate, word, z, round(best - typed_score, 2), kind)

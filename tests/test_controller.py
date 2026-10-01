@@ -672,3 +672,37 @@ def test_double_shift_puts_the_letter_back(make_screen):
     assert s.text == '"ждут '
     s.double_shift()
     assert s.text == "Эждут "
+
+
+def test_a_long_word_with_an_extra_letter_is_fixed(make_screen):
+    s = make_screen(layout=RU)
+    s.write("отреагироваоли ", RU)
+    assert s.text == "отреагировали "  # was left: 3.4 - 1.0 - 1.5 came out 0.8999… against 0.9
+    s = make_screen(layout=EN, ai=FakeAI("не понадобится"))
+    select(s, "отреагироваоли")
+    s.controller.convert_selection()
+    assert s.text == "отреагировали" and s.controller.ai.calls == []
+
+
+def test_the_selection_fix_is_bolder_than_autocorrect(make_screen):
+    s = make_screen(layout=RU)
+    s.write("дорошка ", RU)
+    assert s.text == "дорошка "  # typing: not sure enough to change it unasked
+    s = make_screen(layout=EN)  # no Claude: the bolder guess is pasted
+    select(s, "дорошка")
+    s.controller.convert_selection()
+    assert s.text == "дорожка"
+    ai = FakeAI("дорожка")
+    s = make_screen(layout=EN, ai=ai)  # with Claude: Claude checks the bolder guess
+    select(s, "дорошка")
+    s.controller.convert_selection()
+    assert s.text == "дорожка" and len(ai.calls) == 1
+
+
+def test_typos_in_the_selection_are_fixed_even_with_autocorrect_off(make_screen):
+    config = Config()
+    config.autocorrect = False
+    s = make_screen(config, layout=EN)
+    select(s, "превет")
+    s.controller.convert_selection()
+    assert s.text == "привет"

@@ -44,7 +44,7 @@ def make_typo(speller: Speller, word: str, lang: str, rng: random.Random) -> str
     return word[:i] + word[i] + word[i:]
 
 
-def run(speller: Speller, sets, typos, verbose=False):
+def run(speller: Speller, sets, typos, verbose=False, eager=False):
     for name, by_lang in sets.items():
         changed, total, examples = 0, 0, []
         for lang, words in by_lang.items():
@@ -52,7 +52,7 @@ def run(speller: Speller, sets, typos, verbose=False):
                 if not word.isalpha():
                     continue
                 total += 1
-                fix = speller.suggest(word, lang)
+                fix = speller.suggest(word, lang, eager)
                 if fix:
                     changed += 1
                     examples.append(f"{word}→{fix.word}")
@@ -64,7 +64,7 @@ def run(speller: Speller, sets, typos, verbose=False):
     for lang, pairs in typos.items():
         for typo, word in pairs:
             total += 1
-            fix = speller.suggest(typo, lang)
+            fix = speller.suggest(typo, lang, eager)
             if fix and fix.word == word:
                 fixed += 1
             elif fix:
@@ -103,10 +103,12 @@ def main():
     sets = {"frequent": {l: w[:10000] for l, w in weighted.items()}, "unseen": holdout}
     print("default tuning:")
     run(speller, sets, typos, verbose=True)
+    print("a selection to fix (Shift+Pause, eager):")
+    run(speller, sets, typos, eager=True)
     if args.sweep:
-        for vowel, long_max in [(2.2, 0.6), (1.2, 0.6), (1.6, 0.6), (1.4, 1.0)]:
-            speller.tuning = replace(SpellTuning(), cost_vowel=vowel, long_bonus_max=long_max)
-            print(f"cost_vowel={vowel} long_bonus_max={long_max}")
+        for gap, min_candidate, long_max in [(1.0, 3.0, 0.6), (1.0, 2.5, 0.6), (0.7, 2.5, 1.0), (0.5, 2.0, 1.0)]:
+            speller.tuning = replace(SpellTuning(), gap=gap, min_candidate=min_candidate, long_bonus_max=long_max)
+            print(f"gap={gap} min_candidate={min_candidate} long_bonus_max={long_max}")
             run(speller, sets, typos)
 
 
