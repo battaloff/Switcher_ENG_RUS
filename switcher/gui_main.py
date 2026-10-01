@@ -91,8 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     from . import __version__
 
-    log.info("Switcher %s started: layouts %s, auto switch %s, early %s, autocorrect %s, uzbek %s, Claude %s",
-             __version__, sorted(getattr(app.backend, "_hkls", {}) or []), app.config.auto_switch,
+    log.info("Switcher started: version %s, layouts %s, auto switch %s, early %s, autocorrect %s, uzbek %s, "
+             "Claude %s", __version__, sorted(getattr(app.backend, "_hkls", {}) or []), app.config.auto_switch,
              app.config.early_switch, app.config.autocorrect, app.config.writes_uzbek, bool(app.assistant))
     try:
         app.run_gui()
