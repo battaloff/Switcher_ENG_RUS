@@ -9,6 +9,8 @@ import sys
 import threading
 from pathlib import Path
 
+from .paths import log_path
+
 log = logging.getLogger(__name__)
 
 
@@ -100,6 +102,7 @@ class Tray:
                              lambda icon, item: ui.call(lambda: ui.open_settings(tab="stats"))),
             pystray.MenuItem("Разобрать мои исправления (Claude)", learn, enabled=lambda item: app.ai_ready()),
             pystray.MenuItem(updates_text, lambda icon, item: ui.call(lambda: ui.open_settings(tab="updates"))),
+            pystray.MenuItem("Журнал работы", lambda icon, item: open_folder(log_path())),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", quit_),
         )

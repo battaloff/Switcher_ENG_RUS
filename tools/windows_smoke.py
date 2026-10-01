@@ -274,6 +274,30 @@ def main() -> int:
     type_keys("rfr ltkf ")  # not "ghbdtn": the undo above taught to keep that one as typed
     check("keys are heard again after Windows dropped the hook", "как дела ")
 
+    # the keyboard listener thread dies: the health check starts a new one
+    app.backend._listeners[0].stop()
+    time.sleep(7)
+    clear()
+    layout(EN)
+    type_keys("rfr ltkf ")
+    check("keys are heard again after the listener died", "как дела ")
+    print(f"   health recoveries so far: {app.recoveries}")
+
+    # the engine thread hangs on one item: a new one takes over
+    import switcher.app as app_module
+
+    app_module.STUCK_AFTER = 3.0
+    release = threading.Event()
+    app.post(release.wait)
+    time.sleep(10)
+    clear()
+    layout(EN)
+    type_keys("rfr ltkf ")
+    check("keys are handled again after the engine thread hung", "как дела ")
+    release.set()
+    results.append(app.recoveries >= 2)
+    print(f"{'OK  ' if app.recoveries >= 2 else 'FAIL'} health recoveries: {app.recoveries}")
+
     app.stop_event.set()
     runner.join(timeout=5)
     notepad.kill()

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import time
 from ctypes import wintypes
 
-from ..controller import KeyEvent
 from ..layouts import EN, RU, Stroke
 from .base import BaseBackend
+
+log = logging.getLogger(__name__)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -77,6 +79,7 @@ class WindowsBackend(BaseBackend):
         self._app_cache: tuple[int, float, str] = (0, 0.0, "")
         self._pending_layout: tuple[str | None, float] = (None, 0.0)
         self._watchdog = None
+        self._watchdog_retry_at = 0.0
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -177,6 +180,7 @@ class WindowsBackend(BaseBackend):
         from .win_watchdog import HookWatchdog
 
         self._watchdog = HookWatchdog(self._restart_keyboard_hook)
+        self._watchdog_retry_at = time.monotonic() + 30  # give it time to start
         self._watchdog.start()
 
     def stop(self) -> None:
@@ -185,23 +189,20 @@ class WindowsBackend(BaseBackend):
             self._watchdog = None
         super().stop()
 
-    def _restart_keyboard_hook(self) -> None:
-        """Replace the keyboard listener whose hook Windows removed; what was typed meanwhile is unknown."""
-        with self._lock:
-            if not self._listeners:
-                return
-            old = self._listeners[0]
-            try:
-                old.stop()
-            except Exception:
-                pass
-            listener = self._pk.Listener(on_press=self._on_press, on_release=self._on_release,
-                                         **self._listener_options())
-            listener.daemon = True
-            listener.start()
-            self._listeners[0] = listener
-        if self._sink:
-            self._sink(KeyEvent("press", "hook-restored", app=self.active_app(), time=time.monotonic()))
+    def heal(self) -> str | None:
+        fixed = super().heal()
+        watchdog = self._watchdog
+        if watchdog is not None and not watchdog.running and time.monotonic() > self._watchdog_retry_at:
+            # without it a hook Windows drops is never noticed; retry now and then, not every check
+            self._watchdog_retry_at = time.monotonic() + 600
+            log.error("the hook watchdog is not running: starting a new one")
+            from .win_watchdog import HookWatchdog
+
+            watchdog.stop()
+            self._watchdog = HookWatchdog(self._restart_keyboard_hook)
+            self._watchdog.start()
+            fixed = fixed or "watchdog"
+        return fixed
 
     @staticmethod
     def _send(keys: list[tuple[int, int, int]]) -> None:

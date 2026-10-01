@@ -4,7 +4,9 @@ Windows silently removes a low-level keyboard hook whose callback once answers
 too slowly (the LowLevelHooksTimeout); the program is never told and simply
 stops seeing keys.  Raw Input reports keystrokes independently of hooks, so both
 are counted: when keys keep arriving through Raw Input while the hook sees
-none, the hook is gone and gets reinstalled.
+none, the hook is gone and gets reinstalled.  The hook is also reinstalled
+after the computer wakes up and after the screen is unlocked, when Windows
+is most likely to have dropped it.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import threading
+import time
 from ctypes import wintypes
 from typing import Callable
 
@@ -23,6 +26,9 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 WM_DESTROY, WM_CLOSE, WM_INPUT = 0x0002, 0x0010, 0x00FF
+WM_POWERBROADCAST, WM_WTSSESSION_CHANGE = 0x0218, 0x02B1
+PBT_RESUMED = {0x0007, 0x0012}  # PBT_APMRESUMESUSPEND, PBT_APMRESUMEAUTOMATIC
+WTS_BACK = {0x1, 0x3, 0x8}  # console / remote connect, session unlock
 RIDEV_INPUTSINK = 0x00000100  # receive input even when another window has the focus
 HWND_MESSAGE = wintypes.HWND(-3)
 
@@ -63,6 +69,25 @@ kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
 
+def _notify_on_wake(hwnd) -> None:
+    """Ask for WM_POWERBROADCAST on resume and WM_WTSSESSION_CHANGE on unlock (best effort)."""
+    try:
+        user32.RegisterSuspendResumeNotification.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        user32.RegisterSuspendResumeNotification.restype = wintypes.HANDLE
+        if not user32.RegisterSuspendResumeNotification(hwnd, 0):  # DEVICE_NOTIFY_WINDOW_HANDLE
+            log.info("hook watchdog: no resume notifications (%s)", ctypes.get_last_error())
+    except (AttributeError, OSError):
+        log.info("hook watchdog: no resume notifications on this Windows")
+    try:
+        wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+        wtsapi32.WTSRegisterSessionNotification.argtypes = (wintypes.HWND, wintypes.DWORD)
+        wtsapi32.WTSRegisterSessionNotification.restype = wintypes.BOOL
+        if not wtsapi32.WTSRegisterSessionNotification(hwnd, 0):  # NOTIFY_FOR_THIS_SESSION
+            log.info("hook watchdog: no unlock notifications (%s)", ctypes.get_last_error())
+    except (AttributeError, OSError):
+        log.info("hook watchdog: no unlock notifications on this Windows")
+
+
 class HookWatchdog:
     #: raw key events in a row the hook did not see (a key down and up each: about four keystrokes)
     MISSING = 8
@@ -73,6 +98,8 @@ class HookWatchdog:
         self._hwnd = None
         self._proc = WNDPROC(self._window_proc)  # keep a reference: Windows calls it
         self.restarts = 0
+        self.wakeups = 0
+        self._last_wake = 0.0
         self.running = False
 
     def hook_saw_event(self) -> None:
@@ -103,6 +130,7 @@ class HookWatchdog:
             if not user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device)):
                 log.warning("hook watchdog: RegisterRawInputDevices failed (%s)", ctypes.get_last_error())
                 return
+            _notify_on_wake(hwnd)
             self.running = True
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
@@ -120,6 +148,15 @@ class HookWatchdog:
                 self._missed = 0
                 self.restarts += 1
                 log.warning("keys arrive but the keyboard hook sees none (Windows removed it?): reinstalling")
+                threading.Thread(target=self._restart, name="switcher-hook-restart", daemon=True).start()
+        elif (msg == WM_POWERBROADCAST and wparam in PBT_RESUMED) or (msg == WM_WTSSESSION_CHANGE
+                                                                       and wparam in WTS_BACK):
+            now = time.monotonic()
+            if now - self._last_wake > 5:  # a wake-up comes as two messages
+                self._last_wake = now
+                self.wakeups += 1
+                self._missed = 0
+                log.info("woke up or unlocked: reinstalling the keyboard hook")
                 threading.Thread(target=self._restart, name="switcher-hook-restart", daemon=True).start()
         elif msg == WM_CLOSE:
             user32.DestroyWindow(hwnd)

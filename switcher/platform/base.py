@@ -96,6 +96,34 @@ class BaseBackend:
         """Platform-specific pynput listener options (e.g. an event filter)."""
         return {}
 
+    def heal(self) -> str | None:
+        """Called every few seconds: restart what stopped. Returns what was restarted, if anything."""
+        with self._lock:
+            keyboard = self._listeners[0] if self._listeners else None
+        if keyboard is not None and not keyboard.is_alive():
+            log.error("the keyboard listener has stopped: starting a new one")
+            self._restart_keyboard_hook()
+            return "keyboard"
+        return None
+
+    def _restart_keyboard_hook(self) -> None:
+        """Replace the keyboard listener (its hook is gone); what was typed meanwhile is unknown."""
+        with self._lock:
+            if not self._listeners:
+                return
+            old = self._listeners[0]
+            try:
+                old.stop()
+            except Exception:
+                pass
+            listener = self._pk.Listener(on_press=self._on_press, on_release=self._on_release,
+                                         **self._listener_options())
+            listener.daemon = True
+            listener.start()
+            self._listeners[0] = listener
+        if self._sink:
+            self._sink(KeyEvent("press", "hook-restored", app=self.active_app(), time=time.monotonic()))
+
     def stop(self) -> None:
         for listener in self._listeners:
             listener.stop()

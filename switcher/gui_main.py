@@ -10,6 +10,7 @@ import logging
 import os
 import sys
 import tempfile
+import threading
 import traceback
 
 log = logging.getLogger("switcher")
@@ -60,6 +61,14 @@ def _setup_logging() -> None:
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 
+    # there is no console: an error in a background thread must not vanish silently
+    def thread_failed(args) -> None:
+        if args.exc_type is not SystemExit:
+            name = args.thread.name if args.thread else "?"
+            log.error("thread %s failed", name, exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    threading.excepthook = thread_failed
+
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
@@ -80,7 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("start failed")
         _message(f"Не удалось запустить Switcher:\n{exc}\n\nПодробности в {log_path()}", error=True)
         return 1
-    log.info("Switcher started")
+    from . import __version__
+
+    log.info("Switcher %s started: layouts %s, auto switch %s, early %s, autocorrect %s, uzbek %s, Claude %s",
+             __version__, sorted(getattr(app.backend, "_hkls", {}) or []), app.config.auto_switch,
+             app.config.early_switch, app.config.autocorrect, app.config.writes_uzbek, bool(app.assistant))
     try:
         app.run_gui()
     except Exception as exc:

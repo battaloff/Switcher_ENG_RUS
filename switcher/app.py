@@ -23,6 +23,10 @@ from .profile import Profile
 
 log = logging.getLogger(__name__)
 
+HEALTH_EVERY = 5.0  # seconds between checks that keys are still being handled
+STUCK_AFTER = 20.0  # one key taking this long means the engine thread hangs
+FLUSH_EVERY = 30.0  # seconds between saving the learned vocabulary and statistics
+
 
 def make_assistant(config: Config) -> Assistant | None:
     if not config.ai.enabled or not Assistant.available():
@@ -52,6 +56,10 @@ class App:
         self.controller.post = self.post
         self.queue: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
+        self._worker_gen = 0
+        self._worker_thread: threading.Thread | None = None
+        self._busy_since = 0.0  # when the engine thread took the item it is on (0: idle)
+        self.recoveries = 0
         self._feedback = 0
         self._reviewing = threading.Lock()
         self.releases: list | None = None  # the last list of versions fetched from GitHub
@@ -65,24 +73,70 @@ class App:
     def post(self, fn) -> None:
         self.queue.put(fn)
 
-    def _worker(self) -> None:
+    def _worker(self, gen: int = 0) -> None:
         last_flush = time.monotonic()
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() and gen == self._worker_gen:
             try:
-                item = self.queue.get(timeout=1.0)
-            except queue.Empty:
-                item = None
-            if item is not None:
                 try:
-                    if callable(item):
-                        item()
-                    else:
-                        self.controller.handle(item)
-                except Exception:
-                    log.exception("event handling failed")
-            if time.monotonic() - last_flush > 30:
-                self.profile.flush()
-                last_flush = time.monotonic()
+                    item = self.queue.get(timeout=1.0)
+                except queue.Empty:
+                    item = None
+                if item is not None:
+                    self._busy_since = time.monotonic()
+                    try:
+                        if callable(item):
+                            item()
+                        else:
+                            self.controller.handle(item)
+                    except Exception:
+                        log.exception("event handling failed")
+                    finally:
+                        self._busy_since = 0.0
+                if time.monotonic() - last_flush > FLUSH_EVERY:
+                    last_flush = time.monotonic()
+                    self.profile.flush()
+            except Exception:  # never let this thread end: the keys would go unanswered
+                log.exception("engine loop failed")
+                self.stop_event.wait(0.5)
+
+    def _start_worker(self) -> threading.Thread:
+        self._worker_gen += 1
+        self._busy_since = 0.0
+        worker = threading.Thread(target=self._worker, args=(self._worker_gen,),
+                                  name=f"switcher-engine-{self._worker_gen}", daemon=True)
+        worker.start()
+        self._worker_thread = worker
+        return worker
+
+    def check_health(self) -> list[str]:
+        """Restart whatever stopped handling keys; returns what was restarted."""
+        fixed = []
+        worker = self._worker_thread
+        if worker is not None:
+            hangs = self._busy_since and time.monotonic() - self._busy_since > STUCK_AFTER
+            if hangs or not worker.is_alive():
+                log.error("the engine thread %s: starting a new one", "hangs" if hangs else "has stopped")
+                self._start_worker()  # a hung one quits once it gets unstuck
+                self.post(lambda: self.controller.reset("engine-restart"))
+                fixed.append("engine")
+        try:
+            what = self.backend.heal()
+        except Exception:
+            log.exception("keyboard health check failed")
+            what = None
+        if what:
+            fixed.append(what)
+        if fixed:
+            self.recoveries += 1
+            log.warning("recovered: %s", ", ".join(fixed))
+        return fixed
+
+    def _watch_health(self) -> None:
+        while not self.stop_event.wait(HEALTH_EVERY):
+            try:
+                self.check_health()
+            except Exception:
+                log.exception("health check failed")
 
     # -- settings --------------------------------------------------------------
 
@@ -136,14 +190,14 @@ class App:
 
     def start(self) -> threading.Thread:
         self.backend.start(self.submit)
-        worker = threading.Thread(target=self._worker, name="switcher-engine", daemon=True)
-        worker.start()
+        worker = self._start_worker()
+        threading.Thread(target=self._watch_health, name="switcher-health", daemon=True).start()
         return worker
 
     def shutdown(self, worker: threading.Thread) -> None:
         self.stop_event.set()
         self.backend.stop()
-        worker.join(timeout=2)
+        (self._worker_thread or worker).join(timeout=2)
         self.profile.close()
 
     # -- updates -------------------------------------------------------------
