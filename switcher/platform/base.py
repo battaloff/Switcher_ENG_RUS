@@ -156,14 +156,19 @@ class BaseBackend:
         with self._lock:
             return time.monotonic() < self._busy_until
 
-    def _emit(self, kind: str, name: str, char: str | None, code: str | None) -> None:
+    def _held_mods(self) -> frozenset[str] | None:
+        """The modifiers the OS says are held right now; None where it cannot tell."""
+        return None
+
+    def _emit(self, kind: str, name: str, char: str | None, code: str | None,
+              mods: frozenset[str] | None = None) -> None:
         if name == "shift":
             self._shift = kind == "press"
         shift = self._shift
         if char and char.isalpha():
             shift = char.isupper()
         ev = KeyEvent(kind, name, char=char, code=code, shift=shift, layout=self.current_layout(),
-                      app=self.active_app(), time=time.monotonic())
+                      app=self.active_app(), time=time.monotonic(), mods=mods)
         if self._sink:
             self._sink(ev)
 
@@ -188,8 +193,11 @@ class BaseBackend:
             self._injected_run = 0
             self.keys_seen += 1
             self.last_key_at = time.monotonic()
+            held = self._held_mods()
+            if held is not None and not (isinstance(key, self._pk.Key) and _MODIFIER_NAMES.get(key.name) == "shift"):
+                self._shift = "shift" in held  # a Shift release lost to the lock screen must not linger
             name, char, code = self._describe(key)
-            self._emit("press", name, char, code)
+            self._emit("press", name, char, code, held)
         except Exception:  # never let an exception kill the OS hook
             log.exception("press handler failed")
 

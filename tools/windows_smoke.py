@@ -309,6 +309,20 @@ def main() -> int:
     type_keys("rfr ltkf ")
     check("keys are handled after the break", "как дела ")
 
+    # Win+L: Switcher saw Win go down, the lock screen got its release; Windows holds nothing now
+    from switcher.controller import KeyEvent
+
+    app.post(lambda: app.controller.handle(KeyEvent("press", "cmd", app=app.backend.active_app(),
+                                                    time=time.monotonic())))
+    time.sleep(0.3)
+    clear_keep_mods = app.controller.mods.copy()
+    empty = ctypes.create_unicode_buffer("")
+    user32.SendMessageW(edit, WM_SETTEXT, 0, ctypes.addressof(empty))
+    layout(EN)
+    type_keys("rfr ltkf ")
+    check("keys are handled after Win+L and unlocking", "как дела ")
+    print(f"   Switcher thought held before: {sorted(clear_keep_mods)}, now: {sorted(app.controller.mods)}")
+
     report = app.diagnostics()
     print("self-check:\n" + report)
     healthy = "Обработка клавиш: работает" in report and "Перехват клавиатуры: работает" in report

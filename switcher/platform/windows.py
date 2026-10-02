@@ -29,6 +29,9 @@ class LASTINPUTINFO(ctypes.Structure):
 user32.GetLastInputInfo.argtypes = (ctypes.POINTER(LASTINPUTINFO),)
 user32.GetLastInputInfo.restype = wintypes.BOOL
 kernel32.GetTickCount.restype = wintypes.DWORD
+user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+user32.GetAsyncKeyState.restype = ctypes.c_short
+_MODIFIER_VKS = (("shift", 0x10), ("ctrl", 0x11), ("alt", 0x12), ("cmd", 0x5B), ("cmd", 0x5C))
 user32.GetKeyboardLayoutList.argtypes = (ctypes.c_int, ctypes.POINTER(HKL))
 user32.GetKeyboardLayoutList.restype = ctypes.c_int
 user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -196,6 +199,9 @@ class WindowsBackend(BaseBackend):
             self._watchdog.stop()
             self._watchdog = None
         super().stop()
+
+    def _held_mods(self) -> frozenset[str]:
+        return frozenset(name for name, vk in _MODIFIER_VKS if user32.GetAsyncKeyState(vk) & 0x8000)
 
     #: our own input is tagged (OWN_INPUT), so injected keys from elsewhere can be trusted when they
     #: are all there is: a remote desktop session or keyboard software sends the user's keys that way

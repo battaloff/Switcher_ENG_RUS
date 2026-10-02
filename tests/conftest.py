@@ -49,6 +49,8 @@ class FakeScreen:
         self.selection = ""
         self.notes: list[str] = []
         self.clock = 100.0
+        self.held: set[str] = set()  # modifiers held as the OS sees them
+        self.os_knows_mods = True  # like Windows; False: like an OS that cannot tell
         self.controller: Controller | None = None
 
     # -- Backend API -------------------------------------------------------
@@ -83,8 +85,16 @@ class FakeScreen:
     # -- the user ------------------------------------------------------------
     def _event(self, kind, key, **kw):
         self.clock += 0.12
+        if key in ("shift", "ctrl", "alt", "cmd"):
+            (self.held.add if kind == "press" else self.held.discard)(key)
+        if self.os_knows_mods:
+            kw.setdefault("mods", frozenset(self.held))
         ev = KeyEvent(kind, key, layout=self.layout, app=self.app, time=self.clock, **kw)
         self.controller.handle(ev)
+
+    def lose_releases(self):
+        """The lock screen took the key releases: the OS holds nothing, Switcher was not told."""
+        self.held.clear()
 
     def press(self, stroke: Stroke):
         char = self.kb.layouts[self.layout].char(stroke)

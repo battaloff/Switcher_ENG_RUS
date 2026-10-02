@@ -706,3 +706,43 @@ def test_typos_in_the_selection_are_fixed_even_with_autocorrect_off(make_screen)
     select(s, "превет")
     s.controller.convert_selection()
     assert s.text == "привет"
+
+
+def test_typing_after_win_l_and_unlocking(make_screen):
+    # Win+L: the lock screen takes over at once, so the releases of Win and L never reach Switcher
+    s = make_screen(layout=EN)
+    s._event("press", "cmd")
+    s._event("press", "char", char="l", code="l")
+    s.lose_releases()
+    s.keys("ghbdtn ")  # back after unlocking: Windows says no modifier is held
+    assert s.text.endswith("привет ")
+
+
+def test_typing_after_ctrl_alt_del(make_screen):
+    s = make_screen(layout=EN)
+    s._event("press", "ctrl")
+    s._event("press", "alt")
+    s._event("press", "delete")
+    s.lose_releases()
+    s.keys("ghbdtn ")
+    assert s.text.endswith("привет ")
+
+
+def test_a_lost_release_is_forgotten_in_time_where_the_os_cannot_tell(make_screen):
+    s = make_screen(layout=EN)
+    s.os_knows_mods = False
+    s._event("press", "cmd")
+    s.keys("ghbdtn ")
+    assert s.text == "ghbdtn "  # Win held: shortcuts, left alone
+    s.clock += 60
+    s.keys("ghbdtn ")
+    assert s.text == "ghbdtn привет "
+
+
+def test_a_new_hook_forgets_held_keys(make_screen):
+    s = make_screen(layout=EN)
+    s.os_knows_mods = False
+    s._event("press", "ctrl")
+    s._event("press", "hook-restored")
+    s.keys("ghbdtn ")
+    assert s.text == "привет "

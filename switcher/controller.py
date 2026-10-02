@@ -45,6 +45,11 @@ class KeyEvent:
     layout: str | None = None  # the OS layout at the moment of the event, if known
     app: str = ""
     time: float = 0.0
+    mods: frozenset[str] | None = None  # the modifiers the OS says are held now, when it can tell
+
+
+#: a modifier "held" this long while other keys are typed has lost its release (lock screen)
+STALE_MODIFIER = 20.0
 
 
 class Backend(Protocol):
@@ -117,6 +122,7 @@ class Controller:
         self._selection_memo: tuple[str, float] | None = None  # selection left as is: a second press swaps it
         self._deferred: str | None = None  # a hotkey waiting for its modifiers to be released
         self.mods: set[str] = set()
+        self._mod_since: dict[str, float] = {}
         self._tap_mod: str | None = None          # modifier pressed alone, may become a tap
         self._tap_down_at = 0.0
         self._last_tap: tuple[str | None, float] = (None, 0.0)
@@ -142,11 +148,19 @@ class Controller:
         if ev.kind == "release":
             self._on_release(ev, now)
             return
+        if ev.key == "hook-restored":
+            # nothing about the keys before is known: a modifier may have been let go meanwhile
+            self.mods.clear()
+            self._mod_since.clear()
+            self._tap_mod, self._deferred = None, None
+            self.reset("hook-restored")
+            return
         if ev.key == "mouse":
             self.reset("mouse")
             return
         if ev.key in MODIFIERS:
             self.mods.add(ev.key)
+            self._mod_since[ev.key] = now
             if ev.key in TAP_MODIFIERS and self.mods == {ev.key}:
                 self._tap_mod, self._tap_down_at = ev.key, now
             else:
@@ -154,6 +168,8 @@ class Controller:
             return
         self._tap_mod = None
         self._last_tap = (None, 0.0)
+        if self.mods:
+            self._forget_stale_mods(ev, now)
 
         name = None if self._own_window() else self._match_hotkey(ev)
         if name:
@@ -176,9 +192,26 @@ class Controller:
         else:
             self.reset(ev.key)
 
+    def _forget_stale_mods(self, ev: KeyEvent, now: float) -> None:
+        """Win+L or Ctrl+Alt+Del: the lock screen takes over and the releases never reach us.
+
+        A modifier we still think is held would make every key look like a shortcut, and nothing
+        would be fixed until it is pressed again.  Trust the OS when it tells; otherwise time.
+        """
+        if ev.mods is not None:
+            stale = self.mods - ev.mods
+        else:
+            stale = {m for m in self.mods if now - self._mod_since.get(m, now) > STALE_MODIFIER}
+        if stale:
+            log.info("released while we did not see it (lock screen?): %s", ", ".join(sorted(stale)))
+            self.mods -= stale
+            for m in stale:
+                self._mod_since.pop(m, None)
+
     def _on_release(self, ev: KeyEvent, now: float) -> None:
         if ev.key in MODIFIERS:
             self.mods.discard(ev.key)
+            self._mod_since.pop(ev.key, None)
             if not self.mods and self._deferred:
                 name, self._deferred = self._deferred, None
                 self._run_hotkey_now(name)

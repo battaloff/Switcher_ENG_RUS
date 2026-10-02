@@ -172,7 +172,7 @@ def test_injected_keys_are_trusted_when_they_are_all_there_is():
     backend.last_key_at, backend.ECHO_GRACE = 0.0, 0.05
     emitted, notes = [], []
     backend._describe = lambda key: ("char", key, key)
-    backend._emit = lambda kind, name, char, code: emitted.append(char)
+    backend._emit = lambda kind, name, char, code, mods=None: emitted.append(char)
     backend.notify = notes.append
     backend.TRUST_INJECTED_AFTER = 3
     backend._on_press("a", injected=True)
