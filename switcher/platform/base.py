@@ -53,6 +53,11 @@ class BaseBackend:
         self.accept_injected = os.environ.get("SWITCHER_ACCEPT_INJECTED") == "1"
         if self.accept_injected:
             self.ECHO_GRACE = max(self.ECHO_GRACE, 0.3)
+        # what the self-check reports
+        self.keys_seen = 0
+        self.last_key_at = 0.0
+        self.injected_dropped = 0
+        self._injected_run = 0
 
     # -- OS hooks (override) -------------------------------------------------
 
@@ -162,10 +167,27 @@ class BaseBackend:
         if self._sink:
             self._sink(ev)
 
+    #: injected keys in a row, and none from a keyboard, after which they are taken for the user's
+    #: (remote desktop, keyboard software); None: never (own input is not told apart on this OS)
+    TRUST_INJECTED_AFTER: int | None = None
+
     def _on_press(self, key, injected: bool = False) -> None:
         try:
-            if (injected and not self.accept_injected) or self._is_echo():
+            if self._is_echo():
                 return
+            if injected and not self.accept_injected:
+                self.injected_dropped += 1
+                self._injected_run += 1
+                if self.TRUST_INJECTED_AFTER and self._injected_run >= self.TRUST_INJECTED_AFTER:
+                    self.accept_injected = True
+                    self.ECHO_GRACE = max(self.ECHO_GRACE, 0.3)
+                    log.warning("only injected keys arrive (remote desktop or keyboard software?): handling them")
+                    self.notify("Клавиатура приходит в Windows как программный ввод (удалённый доступ или "
+                                "программа клавиатуры) — Switcher теперь работает и с ним.")
+                return
+            self._injected_run = 0
+            self.keys_seen += 1
+            self.last_key_at = time.monotonic()
             name, char, code = self._describe(key)
             self._emit("press", name, char, code)
         except Exception:  # never let an exception kill the OS hook

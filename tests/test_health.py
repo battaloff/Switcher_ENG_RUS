@@ -43,6 +43,7 @@ def make_app(profile=None):
     app.queue, app.stop_event = queue.Queue(), threading.Event()
     app.controller, app.backend, app.profile = FakeController(), FakeBackend(), profile or FakeProfile()
     app._worker_gen, app._worker_thread, app._busy_since, app.recoveries = 0, None, 0.0, 0
+    app.recovery_log = []
     return app
 
 
@@ -126,3 +127,60 @@ def test_a_dead_keyboard_listener_is_restarted():
     assert backend.heal() == "keyboard" and restarted == [1]
     backend._listeners = [Listener(True)]
     assert backend.heal() is None and restarted == [1]
+
+
+def test_the_self_check_says_what_works_and_what_does_not(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from switcher.config import Config
+
+    monkeypatch.setenv("SWITCHER_HOME", str(tmp_path))
+    app = make_app()
+    app.config, app.started_at = Config(), time.time()
+    app.controller.enabled = True
+    app.profile.threshold_offset = lambda name: 0.0
+    app.ai_ready = lambda: False
+
+    class Listener:
+        alive = True
+
+        def is_alive(self):
+            return self.alive
+
+    listener = Listener()
+    app.backend = SimpleNamespace(_listeners=[listener], keys_seen=12, last_key_at=time.monotonic() - 3,
+                                  injected_dropped=0, accept_injected=False, _hkls={"en": 1, "ru": 2},
+                                  current_layout=lambda: "ru", active_app=lambda: "telegram", heal=lambda: None)
+    app._start_worker()
+    report = app.diagnostics()
+    assert "Обработка клавиш: работает" in report and "Перехват клавиатуры: работает, нажатий 12" in report
+    assert "Раскладки Windows: en, ru; сейчас ru в telegram" in report and "Ошибки в журнале: нет" in report
+    listener.alive = False
+    app._worker_gen += 1  # the engine thread quits
+    assert wait_for(lambda: not app._worker_thread.is_alive())
+    report = app.diagnostics()
+    assert "Обработка клавиш: ОСТАНОВЛЕНА" in report and "Перехват клавиатуры: ОСТАНОВЛЕН" in report
+    app.stop_event.set()
+
+
+def test_injected_keys_are_trusted_when_they_are_all_there_is():
+    from switcher.platform.base import BaseBackend
+
+    backend = BaseBackend.__new__(BaseBackend)
+    backend._lock, backend._busy_until, backend.accept_injected = threading.RLock(), 0.0, False
+    backend.keys_seen = backend.injected_dropped = backend._injected_run = 0
+    backend.last_key_at, backend.ECHO_GRACE = 0.0, 0.05
+    emitted, notes = [], []
+    backend._describe = lambda key: ("char", key, key)
+    backend._emit = lambda kind, name, char, code: emitted.append(char)
+    backend.notify = notes.append
+    backend.TRUST_INJECTED_AFTER = 3
+    backend._on_press("a", injected=True)
+    backend._on_press("b", injected=False)  # a real key in between: still not trusted
+    backend._on_press("c", injected=True)
+    backend._on_press("d", injected=True)
+    assert emitted == ["b"] and not backend.accept_injected
+    backend._on_press("e", injected=True)  # the third in a row
+    backend._on_press("f", injected=True)
+    assert backend.accept_injected and emitted == ["b", "f"] and len(notes) == 1
+    assert backend.injected_dropped == 4 and backend.keys_seen == 2

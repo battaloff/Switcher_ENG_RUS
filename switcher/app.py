@@ -60,6 +60,8 @@ class App:
         self._worker_thread: threading.Thread | None = None
         self._busy_since = 0.0  # when the engine thread took the item it is on (0: idle)
         self.recoveries = 0
+        self.recovery_log: list[tuple[float, str]] = []  # (time, what was restarted), for the self-check
+        self.started_at = time.time()
         self._feedback = 0
         self._reviewing = threading.Lock()
         self.releases: list | None = None  # the last list of versions fetched from GitHub
@@ -128,8 +130,65 @@ class App:
             fixed.append(what)
         if fixed:
             self.recoveries += 1
+            self.recovery_log = (self.recovery_log + [(time.time(), ", ".join(fixed))])[-10:]
             log.warning("recovered: %s", ", ".join(fixed))
         return fixed
+
+    def diagnostics(self) -> str:
+        """A plain-language self-check to read or to send: what works, what does not, recent errors."""
+        from . import __version__
+        from .paths import log_path
+
+        b = self.backend
+        now = time.monotonic()
+        lines = [f"Switcher {__version__}, проверка {time.strftime('%d.%m.%Y %H:%M:%S')}",
+                 f"Запущен: {time.strftime('%d.%m %H:%M', time.localtime(self.started_at))}"]
+        worker = self._worker_thread
+        busy = self._busy_since and now - self._busy_since
+        if worker is None or not worker.is_alive():
+            lines.append("Обработка клавиш: ОСТАНОВЛЕНА")
+        elif busy and busy > 2:
+            lines.append(f"Обработка клавиш: занята одним нажатием уже {busy:.0f} с")
+        else:
+            lines.append("Обработка клавиш: работает")
+        listeners = getattr(b, "_listeners", [])
+        hook_alive = bool(listeners) and listeners[0].is_alive()
+        seen = getattr(b, "last_key_at", 0.0)
+        ago = f"последнее {now - seen:.0f} с назад" if seen else "ещё ни одного"
+        lines.append(f"Перехват клавиатуры: {'работает' if hook_alive else 'ОСТАНОВЛЕН'}, нажатий "
+                     f"{getattr(b, 'keys_seen', 0)} ({ago})")
+        watchdog = getattr(b, "_watchdog", None)
+        if watchdog is not None:
+            lines.append(f"Сторож перехвата: {'работает' if watchdog.running else 'НЕ РАБОТАЕТ'}, "
+                         f"переустановок {watchdog.restarts}, после сна/разблокировки {watchdog.wakeups}")
+        dropped = getattr(b, "injected_dropped", 0)
+        lines.append(f"Программный ввод (удалённый доступ и т. п.): "
+                     f"{'обрабатывается' if getattr(b, 'accept_injected', False) else 'не обрабатывается'}, "
+                     f"пропущено нажатий {dropped}")
+        layouts = sorted(getattr(b, "_hkls", {}) or [])
+        try:
+            current, app_name = b.current_layout(), b.active_app()
+        except Exception as exc:
+            current, app_name = f"ошибка: {exc}", "?"
+        lines.append(f"Раскладки Windows: {', '.join(layouts) or 'не найдены'}; сейчас {current} в {app_name or '?'}")
+        c = self.controller
+        lines.append(f"Автопереключение: {'включено' if c.enabled else 'НА ПАУЗЕ'}; "
+                     f"исправление опечаток {'вкл' if self.config.autocorrect else 'выкл'}; "
+                     f"узбекский {'вкл' if self.config.writes_uzbek else 'выкл'}; "
+                     f"Claude {'подключён' if self.ai_ready() else 'не подключён'}")
+        offset = self.profile.threshold_offset(app_name) if app_name and app_name != "?" else 0.0
+        if offset > 0.5:
+            lines.append(f"В «{app_name}» Switcher стал осторожнее (+{offset:.1f}) после ваших отмен")
+        lines.append(f"Самовосстановлений: {self.recoveries}" + "".join(
+            f"\n  {time.strftime('%d.%m %H:%M', time.localtime(t))} — {what}" for t, what in self.recovery_log))
+        try:
+            with open(log_path(), encoding="utf-8", errors="replace") as f:
+                tail = f.readlines()[-400:]
+            errors = [line.rstrip() for line in tail if " ERROR " in line or " WARNING " in line][-8:]
+        except OSError:
+            errors = []
+        lines.append("Ошибки в журнале: " + ("нет" if not errors else "\n  " + "\n  ".join(errors)))
+        return "\n".join(lines)
 
     def _watch_health(self) -> None:
         while not self.stop_event.wait(HEALTH_EVERY):

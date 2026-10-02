@@ -298,6 +298,23 @@ def main() -> int:
     results.append(app.recoveries >= 2)
     print(f"{'OK  ' if app.recoveries >= 2 else 'FAIL'} health recoveries: {app.recoveries}")
 
+    # back at the computer after a break (night, sleep): the hook is put in afresh
+    app.backend._away = True
+    time.sleep(7)
+    back = any("after a break" in what for _, what in app.recovery_log)
+    print(f"{'OK  ' if back else 'FAIL'} hook reinstalled after a break: {app.recovery_log[-1:]}")
+    results.append(back)
+    clear()
+    layout(EN)
+    type_keys("rfr ltkf ")
+    check("keys are handled after the break", "как дела ")
+
+    report = app.diagnostics()
+    print("self-check:\n" + report)
+    healthy = "Обработка клавиш: работает" in report and "Перехват клавиатуры: работает" in report
+    print(f"{'OK  ' if healthy else 'FAIL'} the self-check says all works")
+    results.append(healthy)
+
     app.stop_event.set()
     runner.join(timeout=5)
     notepad.kill()

@@ -22,6 +22,13 @@ user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintyp
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.GetKeyboardLayout.argtypes = (wintypes.DWORD,)
 user32.GetKeyboardLayout.restype = HKL
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+user32.GetLastInputInfo.argtypes = (ctypes.POINTER(LASTINPUTINFO),)
+user32.GetLastInputInfo.restype = wintypes.BOOL
+kernel32.GetTickCount.restype = wintypes.DWORD
 user32.GetKeyboardLayoutList.argtypes = (ctypes.c_int, ctypes.POINTER(HKL))
 user32.GetKeyboardLayoutList.restype = ctypes.c_int
 user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -80,6 +87,7 @@ class WindowsBackend(BaseBackend):
         self._pending_layout: tuple[str | None, float] = (None, 0.0)
         self._watchdog = None
         self._watchdog_retry_at = 0.0
+        self._away = False
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -189,8 +197,32 @@ class WindowsBackend(BaseBackend):
             self._watchdog = None
         super().stop()
 
+    #: our own input is tagged (OWN_INPUT), so injected keys from elsewhere can be trusted when they
+    #: are all there is: a remote desktop session or keyboard software sends the user's keys that way
+    TRUST_INJECTED_AFTER = 30
+    #: a break this long (night, lunch, sleep, a locked screen) and the hook is reinstalled on return
+    AWAY_AFTER = 300.0
+
+    @staticmethod
+    def idle_seconds() -> float:
+        """Since the last keyboard or mouse input in this session."""
+        info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+        if not user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        return ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+
     def heal(self) -> str | None:
         fixed = super().heal()
+        idle = self.idle_seconds()
+        if idle >= self.AWAY_AFTER:
+            self._away = True
+        elif self._away and idle < 30:
+            # back at the computer: whatever happened meanwhile (sleep, lock, a hook Windows dropped
+            # unnoticed), a fresh hook costs nothing
+            self._away = False
+            log.info("back after a break: reinstalling the keyboard hook")
+            self._restart_keyboard_hook()
+            fixed = fixed or "hook after a break"
         watchdog = self._watchdog
         if watchdog is not None and not watchdog.running and time.monotonic() > self._watchdog_retry_at:
             # without it a hook Windows drops is never noticed; retry now and then, not every check

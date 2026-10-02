@@ -65,6 +65,24 @@ def open_folder(path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
 
 
+def self_check(app) -> None:
+    """Write the self-check to a file, copy it for pasting into a chat, and show it."""
+    from .paths import data_dir
+
+    report = app.diagnostics()
+    log.info("self-check:\n%s", report)
+    path = data_dir() / "проверка.txt"
+    path.write_text(report + "\n", encoding="utf-8")
+    try:
+        import pyperclip
+
+        pyperclip.copy(report)
+        app.backend.notify("Проверка готова и скопирована — можно вставить её в чат (Ctrl+V).")
+    except Exception:
+        log.debug("could not copy the self-check", exc_info=True)
+    open_folder(path)
+
+
 class Tray:
     """Tray icon for the desktop (GUI) mode; menu actions go through the Ui's queue."""
 
@@ -102,6 +120,7 @@ class Tray:
                              lambda icon, item: ui.call(lambda: ui.open_settings(tab="stats"))),
             pystray.MenuItem("Разобрать мои исправления (Claude)", learn, enabled=lambda item: app.ai_ready()),
             pystray.MenuItem(updates_text, lambda icon, item: ui.call(lambda: ui.open_settings(tab="updates"))),
+            pystray.MenuItem("Проверить, всё ли работает", lambda icon, item: self_check(app)),
             pystray.MenuItem("Журнал работы", lambda icon, item: open_folder(log_path())),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выход", quit_),
