@@ -333,13 +333,22 @@ def main() -> int:
     app.stop_event.set()
     runner.join(timeout=5)
     notepad.kill()
+    # the runner's console sometimes takes the focus by now: give it back to Notepad
+    def focus_notepad() -> None:
+        ok = bring_to_front(hwnd)
+        fg = user32.GetForegroundWindow()
+        print(f"   Notepad in front: {ok} (foreground {class_name(fg) if fg else None!r})")
+        time.sleep(0.5)
+
     # a snippet: "015" is completed at once
+    focus_notepad()
     clear()
     layout(EN)
     type_keys("015")
     check("a snippet is completed as it is typed", "015-510-400_4_")
 
     # "Save As" opens on the Russian layout: the file name is typed in English
+    focus_notepad()
     clear()
     layout(RU)
     user.press(Key.ctrl)
