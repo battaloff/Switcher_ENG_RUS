@@ -21,6 +21,13 @@ MODIFIER_KEYSYMS = {
     "Win_L": "cmd", "Win_R": "cmd", "Super_L": "cmd", "Super_R": "cmd",
 }
 MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
+# Switcher's hotkeys: setting name → what it does (the settings window and the AutoHotkey check)
+ACTIONS = (
+    ("convert_last", "Исправить / отменить последнее слово"),
+    ("convert_selection", "Исправить выделенный текст"),
+    ("ai_fix", "Исправить фразу с Claude"),
+    ("toggle", "Пауза"),
+)
 
 # Tk keysym → pynput Key name
 SPECIAL_KEYSYMS = {

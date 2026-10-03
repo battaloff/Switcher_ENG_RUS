@@ -22,7 +22,8 @@ import customtkinter as ctk
 from . import __version__, ahk, autostart, updater
 from .controller import parse_hotkey
 from .engine import split_core
-from .hotkeys import MODIFIER_KEYSYMS, build_spec as build_hotkey, format_hotkey, key_name as hotkey_key_name
+from .hotkeys import ACTIONS, MODIFIER_KEYSYMS, build_spec as build_hotkey, format_hotkey
+from .hotkeys import key_name as hotkey_key_name
 from .hotkeys import problem as hotkey_problem
 from .layouts import EN, RU, canonical_keys, text_lang
 from .paths import data_dir
@@ -31,12 +32,7 @@ from .report import rule_rows, stats_text
 log = logging.getLogger(__name__)
 
 MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]
-HOTKEY_ACTIONS = (
-    ("convert_last", "Исправить / отменить последнее слово"),
-    ("convert_selection", "Исправить выделенный текст"),
-    ("ai_fix", "Исправить фразу с Claude"),
-    ("toggle", "Пауза"),
-)
+HOTKEY_ACTIONS = ACTIONS
 HOTKEY_HINTS = {
     "convert_last": "Если Switcher ошибся или пропустил слово",
     "convert_selection": "Раскладка и опечатки; с Claude — точнее",
@@ -749,6 +745,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self._button(second, "Перезапустить", self.reload_scripts).pack(side="left", padx=8)
         self._button(second, "Запускать со Switcher", self.toggle_script_autostart).pack(side="left")
         self._button(second, "Папка", self.open_script_folder).pack(side="right")
+        self.ahk_clashes = ctk.CTkLabel(page, text="", font=self.fonts["small"], text_color=MUTED, anchor="w",
+                                        justify="left", wraplength=620)
+        self.ahk_clashes.pack(side="bottom", fill="x", pady=(10, 0))
         card = self._card(page, expand=True)
         columns = ("name", "state", "auto", "folder")
         self.ahk_tree = ttk.Treeview(card, columns=columns, show="headings", style="Switcher.Treeview")
@@ -790,8 +789,13 @@ class SettingsWindow(ctk.CTkToplevel):
         selected = {self._ahk_paths.get(iid) for iid in self.ahk_tree.selection()}
         self.ahk_tree.delete(*self.ahk_tree.get_children())
         self._ahk_paths = {}
+        clashes = []
         for i, (key, path) in enumerate(sorted(paths.items(), key=lambda kv: ahk.name_of(kv[1]).lower())):
             state = "работает" if key in running else ("нет файла" if not Path(path).exists() else "остановлен")
+            found = manager.conflicts(path)
+            clashes += [(path, conflict) for conflict in found]
+            if found:
+                state += " ⚠"
             listed = next((v for p, v in configured.items() if ahk.norm(p) == key), None)
             auto = "не в списке" if listed is None else ("запускать" if listed else "—")
             iid = f"s{i}"
@@ -799,6 +803,19 @@ class SettingsWindow(ctk.CTkToplevel):
             self.ahk_tree.insert("", "end", iid=iid, values=(ahk.name_of(path), state, auto, str(Path(path).parent)))
             if path in selected:
                 self.ahk_tree.selection_add(iid)
+        self._show_clashes(clashes)
+
+    def _show_clashes(self, clashes) -> None:
+        """Where the scripts and Switcher want the same keys (⚠ in the list), under the list."""
+        if not clashes:
+            self.ahk_clashes.configure(text="Пересечений со Switcher нет: скрипты не занимают его клавиши и шаблоны.",
+                                       text_color=MUTED)
+            return
+        lines = [f"«{ahk.name_of(path)}», строка {c.line}: {c.message}" for path, c in clashes[:5]]
+        if len(clashes) > 5:
+            lines.append(f"…и ещё {len(clashes) - 5}")
+        self.ahk_clashes.configure(text="⚠ Пересечения со Switcher — поменяйте сочетание в скрипте или в «Горячих "
+                                        "клавишах»:\n" + "\n".join(lines), text_color=DANGER)
 
     def _selected_scripts(self) -> list[str]:
         return [self._ahk_paths[iid] for iid in self.ahk_tree.selection() if iid in self._ahk_paths]
@@ -1161,6 +1178,12 @@ class SettingsWindow(ctk.CTkToplevel):
         self._show_hotkey(name)
         self.hotkey_hint.configure(text=f"{format_hotkey(spec)} — готово. Не забудьте нажать «Сохранить»."
                                    if spec else "Отключено. Не забудьте нажать «Сохранить».")
+        used = self.ahk.scripts_using(spec) if spec and self.ahk is not None else []
+        if used:
+            path, line, written = used[0]
+            self.hotkey_hint.configure(text=f"⚠ {format_hotkey(spec)} занято скриптом AutoHotkey «{ahk.name_of(path)}» "
+                                            f"(строка {line}: {written}) — сработает скрипт, а не Switcher. "
+                                            "Выберите другое сочетание или поменяйте его в скрипте.")
         return True
 
     def _record_press(self, event):

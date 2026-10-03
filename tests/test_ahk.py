@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+import time
 
 import pytest
 
@@ -231,3 +232,33 @@ def test_unsupported_systems_say_so(tmp_path):
     m = ahk.AhkManager(Config(), system=ahk.System())
     assert not m.supported and m.listed() == [] and "Windows" in m.describe_install()
     assert "Windows" in m.start(script(tmp_path))
+
+
+def test_a_script_taking_switchers_keys_is_told_about_once(tmp_path):
+    clash = script(tmp_path, "clash.ahk", "#Requires AutoHotkey v2.0\n^!s::MsgBox 1\n~Shift::return\n")
+    calm = script(tmp_path, "calm.ahk", "#Requires AutoHotkey v2.0\n^!d::MsgBox 1\n")
+    m, system = manager(tmp_path, {clash: False, calm: False})
+    notes = []
+    m.notify = notes.append
+    m.WATCH_EVERY = 0.01
+    stop = threading.Event()
+    watcher = threading.Thread(target=m.watch, args=(stop,))
+    watcher.start()
+    system.windows = {calm: 1}
+    time.sleep(0.1)
+    assert notes == []
+    system.windows = {calm: 1, clash: 2}  # the script starts
+    deadline = time.time() + 2
+    while not notes and time.time() < deadline:
+        time.sleep(0.01)
+    system.windows = {calm: 1}
+    time.sleep(0.05)
+    system.windows = {calm: 1, clash: 3}  # and again: nothing new to say
+    time.sleep(0.1)
+    stop.set()
+    watcher.join(2)
+    assert len(notes) == 1
+    assert notes[0].startswith("Скрипт «clash», строка 2: ^!s — это Ctrl + Alt + S") and "(и ещё 1)" in notes[0]
+    assert m.all_conflicts().keys() == {clash}
+    assert m.scripts_using("<ctrl>+<alt>+s") == [(clash, 2, "^!s")]
+    assert m.scripts_using("<ctrl>+<alt>+q") == []

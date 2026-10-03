@@ -246,6 +246,7 @@ class AhkManager:
         self._looked_at = float("-inf")
         self._interpreters: list[Interpreter] | None = None
         self._own_folders: list[str] | None = None  # AutoHotkey's install folders: its own scripts live there
+        self._warned: set[tuple[str, int, str]] = set()  # conflicts already told about in this run
         self._lock = threading.Lock()
 
     # -- what there is ---------------------------------------------------------
@@ -427,6 +428,53 @@ class AhkManager:
         configured = {norm(p) for p in self.configured()}
         return [p for key, p in found.items() if key not in configured]
 
+    # -- where a script and Switcher want the same keys ---------------------------
+
+    def conflicts(self, path: str, text: str | None = None) -> list:
+        """The script's hotkeys and hotstrings that collide with Switcher's settings (ahk_conflicts.Conflict)."""
+        from .ahk_conflicts import find_conflicts
+
+        try:
+            text = read_script(path)[0] if text is None else text
+            return find_conflicts(text, self.config)
+        except OSError:
+            return []
+        except Exception:
+            log.exception("could not look for conflicts in %s", path)
+            return []
+
+    def all_conflicts(self) -> dict[str, list]:
+        """Script → its conflicts, for every script listed that has some."""
+        found = {path: self.conflicts(path) for path in self.listed()}
+        return {path: conflicts for path, conflicts in found.items() if conflicts}
+
+    def scripts_using(self, spec: str) -> list[tuple[str, int, str]]:
+        """(script, line, as written) of every hotkey in the listed scripts that fires on Switcher's ``spec``."""
+        from .ahk_conflicts import script_hotkeys, takes
+
+        found = []
+        for path in self.listed():
+            try:
+                text = read_script(path)[0]
+            except OSError:
+                continue
+            found += [(path, hotkey.line, hotkey.written) for hotkey in script_hotkeys(text) if takes(hotkey, spec)]
+        return found
+
+    def warn_conflicts(self, paths: Iterable[str]) -> None:
+        """Tell the user, once per run, what a script that just started takes from Switcher."""
+        for path in paths:
+            fresh = [c for c in self.conflicts(path) if (norm(path), c.line, c.message) not in self._warned]
+            if not fresh:
+                continue
+            self._warned.update((norm(path), c.line, c.message) for c in fresh)
+            for conflict in fresh:
+                log.warning("AutoHotkey script %s, line %d: %s", path, conflict.line, conflict.message)
+            first = fresh[0]
+            more = f" (и ещё {len(fresh) - 1})" if len(fresh) > 1 else ""
+            self.notify(f"Скрипт «{name_of(path)}», строка {first.line}: {first.message}{more}. "
+                        "Подробнее: Настройки → AutoHotkey.")
+
     # -- watching ----------------------------------------------------------------
 
     def _changed(self) -> None:
@@ -438,10 +486,15 @@ class AhkManager:
                 log.exception("AutoHotkey listener failed")
 
     def watch(self, stop: threading.Event) -> None:
-        """Tell the listeners whenever a script starts or stops, whoever started or stopped it."""
+        """Tell the listeners whenever a script starts or stops, whoever started or stopped it.
+
+        A script seen starting is also checked for keys it takes from Switcher.
+        """
         before = set(self.running(fresh=True))
+        self.warn_conflicts(sorted(before))
         while not stop.wait(self.WATCH_EVERY):
             now = set(self.running(fresh=True))
             if now != before:
+                self.warn_conflicts(sorted(now - before))
                 before = now
                 self._changed()

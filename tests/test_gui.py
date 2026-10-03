@@ -401,3 +401,45 @@ def test_snippets_can_be_switched_off_in_the_settings(window):
     window.var_snippets_save.set(False)
     new = window.collect()
     assert new.snippets_enabled is False and new.snippets_only_in_save_dialogs is False
+
+
+def test_clashes_with_autohotkey_are_shown(profile, keyboard, monkeypatch, tmp_path):
+    from switcher import ahk
+
+    monkeypatch.setattr(autostart, "is_enabled", lambda: False)
+    app = FakeApp(profile, keyboard)
+    clash = tmp_path / "clash.ahk"
+    clash.write_text("#Requires AutoHotkey v2.0\n^!s::MsgBox 1\n^!q::MsgBox 2\n", encoding="utf-8")
+    app.config.ahk_scripts = {str(clash): False}
+    app.ahk = ahk.AhkManager(app.config, system=FakeAhkSystem())
+    ui = gui.Ui(app, root=ROOT)
+    ui.open_settings(tab="ahk")
+    window = ui.window
+    ROOT.update()
+    try:
+        assert window.ahk_tree.item(window.ahk_tree.get_children()[0], "values")[1] == "остановлен ⚠"
+        text = window.ahk_clashes.cget("text")
+        assert "«clash», строка 2: ^!s — это Ctrl + Alt + S, в Switcher «Пауза»" in text
+
+        assert window.set_hotkey("ai_fix", "<ctrl>+<alt>+q")  # allowed, but Switcher is told who else has it
+        assert "занято скриптом AutoHotkey «clash» (строка 3: ^!q)" in window.hotkey_hint.cget("text")
+        assert window.set_hotkey("ai_fix", "<ctrl>+<alt>+w")
+        assert "занято" not in window.hotkey_hint.cget("text")
+
+        editor = ui.open_script(str(clash))
+        ROOT.update()
+        editor.save()
+        assert editor.text.tag_ranges("conflict")  # line 2 marked
+        assert "строка 2" in editor.status.cget("text")
+        editor.text.delete("2.0", "2.0 lineend")
+        editor.text.insert("2.0", "^!z::MsgBox 1")
+        editor.save()
+        assert not editor.text.tag_ranges("conflict")
+        assert editor.status.cget("text") == "Сохранено ✓"
+        editor.close()
+    finally:
+        for editor in ui.editors:
+            if editor.winfo_exists():
+                editor.destroy()
+        window.destroy()
+        ROOT.update()

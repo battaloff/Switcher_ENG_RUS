@@ -26,6 +26,9 @@ SAMPLE_SCRIPT = """#Requires AutoHotkey v2.0
 ; Win+N — Блокнот
 #n::Run "notepad.exe"
 
+; Ctrl+Alt+S — приостановить скрипт (это сочетание и у Switcher)
+^!s::Suspend
+
 ::@@::me@example.com   ; адрес по "@@"
 ::мб::может быть
 
@@ -115,7 +118,6 @@ def shoot(mode: str, out: Path) -> None:
         if PAGES[i] == "editor":
             editor = ui.open_script(next(iter(scripts)))
             editor.geometry("+0+0")
-            editor.show_error(12, "Строка 12: пример сообщения об ошибке")
             shown["window"] = editor
             root.after(1200, lambda: step(i + 1))
             return

@@ -47,6 +47,7 @@ COLORS = {
     "variable": ("#001080", "#9CDCFE"),
     "number": ("#098658", "#B5CEA8"),
     "error": ("#FDE2E1", "#5A1D1D"),
+    "conflict": ("#FFF4CE", "#4A3A00"),  # a line that takes keys from Switcher
 }
 
 
@@ -123,6 +124,7 @@ class ScriptEditor(ctk.CTkToplevel):
         self._note_until = 0.0  # a message stays this long before the cursor position comes back
         self._claude_result = None  # (script asked about, answer or error), left by the Claude thread
         self._highlight()
+        self.show_conflicts()  # an opened script that takes Switcher's keys says so at once
         self._tick()
         self.after(50, self.text.focus_set)
         self.lift()
@@ -160,13 +162,14 @@ class ScriptEditor(ctk.CTkToplevel):
     def _colours(self, _mode=None) -> None:
         dark = ctk.get_appearance_mode() == "Dark"
         for tag, pair in COLORS.items():
-            if tag == "error":
+            if tag in ("error", "conflict"):
                 self.text.tag_config(tag, background=pair[dark])
             else:
                 self.text.tag_config(tag, foreground=pair[dark])
         for tag in ("string", "comment"):
             self.text.tag_raise(tag)
         self.text.tag_lower("error")
+        self.text.tag_lower("conflict")
         self.gutter.configure(background=CARD_BG[dark])
         self._gutter_fg = MUTED[dark]
         self._view = None
@@ -174,8 +177,9 @@ class ScriptEditor(ctk.CTkToplevel):
     def _modified(self, _event=None) -> None:
         if self.text.edit_modified():
             self.text.edit_modified(False)
-            if self.text.tag_ranges("error"):
+            if self.text.tag_ranges("error") or self.text.tag_ranges("conflict"):
                 self.text.tag_remove("error", "1.0", "end")
+                self.text.tag_remove("conflict", "1.0", "end")
                 self._note_until = 0.0
             if self._highlight_job is not None:
                 self.after_cancel(self._highlight_job)
@@ -250,6 +254,20 @@ class ScriptEditor(ctk.CTkToplevel):
             self.text.mark_set("insert", f"{line}.0")
         self.say("⚠ " + message, keep=3600)  # until the text is edited
 
+    def show_conflicts(self, saved: bool = False) -> list:
+        """Mark the lines that take keys from Switcher and say what each one does to it."""
+        manager = self._manager()
+        found = manager.conflicts(self.path, self.content()) if manager is not None else []
+        self.text.tag_remove("conflict", "1.0", "end")
+        for conflict in found:
+            self.text.tag_add("conflict", f"{conflict.line}.0", f"{conflict.line}.0 lineend+1c")
+        if found:
+            first = found[0]
+            more = f" (и ещё {len(found) - 1}, они подсвечены)" if len(found) > 1 else ""
+            done = "Сохранено. " if saved else ""
+            self.say(f"{done}⚠ Пересечение со Switcher — строка {first.line}: {first.message}{more}", keep=60)
+        return found
+
     # -- actions -----------------------------------------------------------------
 
     def save(self) -> bool:
@@ -262,6 +280,7 @@ class ScriptEditor(ctk.CTkToplevel):
         self.text_value = self.content()
         self.major = script_version(self.text_value) or self.major
         self.say("Сохранено ✓")
+        self.show_conflicts(saved=True)
         if self.on_saved:
             try:
                 self.on_saved(self.path)
