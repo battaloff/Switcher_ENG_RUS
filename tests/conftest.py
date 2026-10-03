@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
 
 from switcher.config import Config
@@ -190,3 +193,10 @@ def make_screen(models, keyboard, profile):
         return screen
 
     return factory
+
+
+def pytest_runtest_logreport(report):
+    """On GitHub Actions a failed test is also an error annotation: readable without the full log."""
+    if report.failed and os.environ.get("GITHUB_ACTIONS") == "true":
+        text = str(report.longrepr)[-3500:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        sys.__stdout__.write(f"\n::error title={report.nodeid}::{text}\n")

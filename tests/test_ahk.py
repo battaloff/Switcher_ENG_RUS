@@ -1,7 +1,10 @@
 """The AutoHotkey manager: which scripts there are, starting and stopping them, checking and saving."""
 
 import os
+import sys
 import threading
+
+import pytest
 
 from switcher import ahk
 from switcher.config import Config
@@ -96,12 +99,29 @@ def test_the_list_is_the_settings_plus_whatever_runs(tmp_path):
     assert m.is_running(other) and not m.is_running(mine)
 
 
+def test_a_short_8_3_path_is_the_same_script(tmp_path):
+    if sys.platform != "win32":
+        pytest.skip("8.3 short names are a Windows thing")
+    import ctypes
+
+    folder = tmp_path / "a rather long folder name"
+    folder.mkdir()
+    path = script(folder)
+    buf = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.GetShortPathNameW(path, buf, 1024) or buf.value == path:
+        pytest.skip("no 8.3 names on this drive")
+    assert ahk.norm(buf.value) == ahk.norm(path)
+
+
 def test_the_same_script_by_another_spelling_of_its_path(tmp_path):
     real = tmp_path / "long folder name"
     real.mkdir()
     path = script(real)
     alias = tmp_path / "LONGFO~1"  # like Windows' 8.3 short names: another path to the same file
-    alias.symlink_to(real, target_is_directory=True)
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("no symlinks here")
     m, system = manager(tmp_path, {str(alias / "keys.ahk"): True})
     system.windows = {path: 5}  # AutoHotkey's title shows the full long path
     assert m.is_running(str(alias / "keys.ahk"))
