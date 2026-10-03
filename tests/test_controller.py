@@ -863,3 +863,18 @@ def test_a_snippet_typed_on_the_numeric_keypad(make_screen):
     assert s.text == "015-510-400_4_"
     assert numpad_key(0x6E, "ru") == (",", None) and numpad_key(0x6E, "en") == (".", None)
     assert numpad_key(0x41, "en") is None
+
+
+def test_letters_no_word_can_start_with_switch_at_once(make_screen):
+    """Like Punto: "фьш" starts no Russian word, so "amirbek" typed on the Russian layout switches early."""
+    s = make_screen(layout=RU)
+    s.keys("ami")
+    assert s.text == "ami" and s.layout == EN
+    s.keys("rbek ")
+    assert s.text == "amirbek "
+
+
+def test_a_typo_that_looks_impossible_is_put_back_at_the_end(make_screen):
+    s = make_screen(layout=RU)
+    s.write("ыегодня ", RU)  # "ыег…" switches early, the whole word is Russian with a typo
+    assert s.text == "сегодня "

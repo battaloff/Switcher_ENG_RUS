@@ -53,6 +53,13 @@ class Tuning:
     early_margin: tuple[float, ...] = (4.5, 3.0, 2.5)
     early_plaus_max: float = -0.5
     early_context: float = 0.5      # margin shift from the language of the phrase so far
+    # ...or, like Punto, the typed letters cannot start a word of their language at all ("фьш…"), and
+    # in the other language they read like letters of a word (a name, a login: "amirbek").  Measured
+    # the same way: still no frequent word switches; of unseen words (names, slang, new jargon) typed
+    # in the wrong layout 82% instead of 68% switch by the 4th letter.
+    early_odd_min_letters: int = 3
+    early_odd_plaus: float = -1.5   # the typed letters at most this natural
+    early_odd_alt_plaus: float = -0.6  # the other reading at least this natural
     early_manual_extra: float = 0.75  # the user picked the layout by hand a moment ago: need more proof
 
 
@@ -379,6 +386,7 @@ class EarlyDecision:
     typed_zipf: float | None = None  # how common words starting like the typed letters are
     alt_zipf: float | None = None
     plausibility: float = 0.0
+    alt_plausibility: float = 0.0
     reason: str = ""
 
 
@@ -422,7 +430,14 @@ def decide_prefix(engine: "Engine", strokes: Sequence[Stroke], typed_lang: str,
         shift += t.early_manual_extra
     typed_zipf = result.typed_zipf if result.typed_zipf is not None else -1.0
     alt_zipf = result.alt_zipf if result.alt_zipf is not None else -1.0
-    if alt_zipf < _by_length(t.early_alt_min, n, first) + shift:
+    result.alt_plausibility = alt_models.prefix_plausibility(alt_low)
+    odd = (typed_letters and result.typed_zipf is None and n >= t.early_odd_min_letters
+           and result.plausibility < t.early_odd_plaus - max(0.0, shift)
+           and result.alt_plausibility > t.early_odd_alt_plaus + max(0.0, shift))
+    if odd and not engine.profile.keeps_prefix(canonical_keys(strokes), typed_low, typed_lang, ctx.app):
+        result.switch = True
+        result.reason = "typed-impossible"
+    elif alt_zipf < _by_length(t.early_alt_min, n, first) + shift:
         result.reason = "other-layout-rare"
     elif typed_zipf > _by_length(t.early_typed_max, n, first):
         result.reason = "typed-is-a-word-start"
