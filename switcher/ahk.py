@@ -64,8 +64,16 @@ _LINE = re.compile(r"(?:^|\n)\s*(?:Line|Строка)\D{0,3}(?P<line>\d+)", re.I
 
 
 def norm(path: str | os.PathLike) -> str:
-    """A path as a key: absolute, with Windows' case and separators."""
-    return os.path.normcase(os.path.abspath(os.fspath(path)))
+    """A path as a key: absolute, long (not "C:\\Users\\RUNNER~1\\…"), with Windows' case and separators.
+
+    AutoHotkey shows a script's full long path in its window title, whatever path it was started with.
+    """
+    path = os.fspath(path)
+    try:
+        path = os.path.realpath(path)
+    except (OSError, ValueError):
+        path = os.path.abspath(path)
+    return os.path.normcase(path)
 
 
 def is_script(path: str | os.PathLike) -> bool:
@@ -237,6 +245,7 @@ class AhkManager:
         self._running: dict[str, tuple[str, int]] = {}  # norm(path) → (path, main window)
         self._looked_at = float("-inf")
         self._interpreters: list[Interpreter] | None = None
+        self._own_folders: list[str] | None = None  # AutoHotkey's install folders: its own scripts live there
         self._lock = threading.Lock()
 
     # -- what there is ---------------------------------------------------------
@@ -248,11 +257,21 @@ class AhkManager:
     def configured(self) -> dict[str, bool]:
         return dict(getattr(self.config, "ahk_scripts", {}) or {})
 
+    def _ahk_own(self, key: str) -> bool:
+        """AutoHotkey's own helper scripts (its launcher, its Dash), not the user's."""
+        if self._own_folders is None:
+            try:
+                self._own_folders = [norm(root) + os.sep for root in self.system.install_roots()]
+            except Exception:
+                self._own_folders = []
+        return any(key.startswith(folder) for folder in self._own_folders)
+
     def _look(self, fresh: bool = False) -> dict[str, tuple[str, int]]:
         with self._lock:
             if fresh or self.clock() - self._looked_at > 0.5:
                 try:
-                    self._running = {norm(path): (path, window) for path, window in self.system.running().items()}
+                    found = ((norm(path), path, window) for path, window in self.system.running().items())
+                    self._running = {key: (path, window) for key, path, window in found if not self._ahk_own(key)}
                 except Exception:
                     log.exception("could not list the running AutoHotkey scripts")
                     self._running = {}

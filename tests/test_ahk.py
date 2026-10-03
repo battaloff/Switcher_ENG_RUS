@@ -96,6 +96,28 @@ def test_the_list_is_the_settings_plus_whatever_runs(tmp_path):
     assert m.is_running(other) and not m.is_running(mine)
 
 
+def test_the_same_script_by_another_spelling_of_its_path(tmp_path):
+    real = tmp_path / "long folder name"
+    real.mkdir()
+    path = script(real)
+    alias = tmp_path / "LONGFO~1"  # like Windows' 8.3 short names: another path to the same file
+    alias.symlink_to(real, target_is_directory=True)
+    m, system = manager(tmp_path, {str(alias / "keys.ahk"): True})
+    system.windows = {path: 5}  # AutoHotkey's title shows the full long path
+    assert m.is_running(str(alias / "keys.ahk"))
+    assert m.listed() == [str(alias / "keys.ahk")]  # one script, not two
+
+
+def test_autohotkeys_own_launcher_is_not_one_of_the_users_scripts(tmp_path):
+    m, system = manager(tmp_path)
+    launcher = tmp_path / "AutoHotkey" / "UX" / "launcher.ahk"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("", encoding="utf-8")
+    path = script(tmp_path)
+    system.windows = {str(launcher): 1, path: 2}
+    assert m.running(fresh=True) == [path]
+
+
 def test_start_stop_and_reload(tmp_path):
     path = script(tmp_path)
     m, system = manager(tmp_path, {path: False})
