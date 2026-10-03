@@ -123,6 +123,9 @@ def main() -> int:
     config = Config()
     config.ai.enabled = False
     config.snippets = {"015": "015-510-400_4_"}
+    import logging
+
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="   log: %(name)s: %(message)s")
     app = App(config)
     runner = threading.Thread(target=app.run, kwargs={"tray": False}, daemon=True)
     runner.start()

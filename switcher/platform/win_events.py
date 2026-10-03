@@ -33,6 +33,8 @@ user32.UnhookWinEvent.argtypes = (wintypes.HANDLE,)
 user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
 user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
 user32.EnumChildWindows.argtypes = (wintypes.HWND, WNDENUMPROC, wintypes.LPARAM)
+user32.IsWindow.argtypes = (wintypes.HWND,)
+user32.IsWindow.restype = wintypes.BOOL
 user32.GetMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT)
 user32.GetMessageW.restype = wintypes.BOOL
 user32.PostThreadMessageW.argtypes = (wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -78,6 +80,7 @@ class SaveDialogWatcher:
         self._proc = WINEVENTPROC(self._event)  # keep a reference: Windows calls it
         self._tid = 0
         self._seen: list[int] = []
+        self._pending: set[int] = set()
         self.running = False
 
     def start(self) -> None:
@@ -114,16 +117,25 @@ class SaveDialogWatcher:
         if id_object != OBJID_WINDOW or not hwnd:
             return
         try:
-            self._check(int(hwnd), retry=True)
+            hwnd = int(hwnd)
+            if _class(hwnd) == "#32770" and hwnd not in self._seen and hwnd not in self._pending:
+                self._pending.add(hwnd)
+                self._check(hwnd, tries=10)
         except Exception:
             log.exception("save dialog check failed")
 
-    def _check(self, hwnd: int, retry: bool) -> None:
-        if hwnd in self._seen or not looks_like_save(hwnd):
-            return
-        if has_file_browser(hwnd):
-            self._seen = (self._seen + [hwnd])[-20:]  # once per dialog: the user may switch back
-            log.info("a save dialog opened: %r", _title(hwnd))
-            self._on_save_dialog(hwnd)
-        elif retry:  # the file browser comes a moment after the dialog itself
-            threading.Timer(0.4, self._check, args=(hwnd, False)).start()
+    def _check(self, hwnd: int, tries: int) -> None:
+        """A dialog may get its title and its file browser a while after it shows up: look again."""
+        try:
+            if looks_like_save(hwnd) and has_file_browser(hwnd):
+                self._pending.discard(hwnd)
+                self._seen = (self._seen + [hwnd])[-20:]  # once per dialog: the user may switch back
+                log.info("a save dialog opened: %r", _title(hwnd))
+                self._on_save_dialog(hwnd)
+            elif tries > 1 and user32.IsWindow(hwnd):
+                threading.Timer(0.3, self._check, args=(hwnd, tries - 1)).start()
+            else:
+                self._pending.discard(hwnd)
+        except Exception:
+            self._pending.discard(hwnd)
+            log.exception("save dialog check failed")

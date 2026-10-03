@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import threading
 import time
 from ctypes import wintypes
 
@@ -202,12 +203,19 @@ class WindowsBackend(BaseBackend):
         except Exception:
             log.exception("could not watch for save dialogs")
 
-    def _save_dialog_opened(self, hwnd: int) -> None:
+    def _save_dialog_opened(self, hwnd: int, again: bool = True) -> None:
         from ..controller import KeyEvent
 
         if self._sink:
             self._sink(KeyEvent("press", "save-dialog", layout=self.current_layout(), app=self.active_app(),
                                 time=time.monotonic()))
+        if again:  # a dialog still setting itself up may miss the first request: make sure
+            threading.Timer(0.8, self._recheck_save_dialog, args=(hwnd,)).start()
+
+    def _recheck_save_dialog(self, hwnd: int) -> None:
+        if user32.GetForegroundWindow() == hwnd and self.current_layout() != EN:
+            log.info("the save dialog is still not on English: asking again")
+            self._save_dialog_opened(hwnd, again=False)
 
     def stop(self) -> None:
         if self._save_dialogs is not None:
