@@ -252,8 +252,8 @@ def _logo_image():
 
 
 class SettingsWindow(ctk.CTkToplevel):
-    PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("ai", "Claude (ИИ)"), ("rules", "Правила"),
-             ("stats", "Что я о вас знаю"), ("updates", "Обновления"))
+    PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"), ("ai", "Claude (ИИ)"),
+             ("rules", "Правила"), ("stats", "Что я о вас знаю"), ("updates", "Обновления"))
 
     def __init__(self, ui: Ui, welcome: bool = False):
         apply_theme()
@@ -311,6 +311,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.tabs = {
             "main": self._main_tab(),
             "keys": self._keys_tab(),
+            "snippets": self._snippets_tab(),
             "ai": self._ai_tab(),
             "rules": self._rules_tab(),
             "stats": self._stats_tab(),
@@ -462,6 +463,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.var_caps = tk.BooleanVar(value=c.fix_caps_lock)
         self.var_two_caps = tk.BooleanVar(value=c.fix_two_capitals)
         self.var_uzbek = tk.BooleanVar(value=c.writes_uzbek)
+        self.var_save_en = tk.BooleanVar(value=c.english_in_save_dialogs)
         self.var_early = tk.BooleanVar(value=c.early_switch)
         self.var_autocorrect = tk.BooleanVar(value=c.autocorrect)
 
@@ -480,6 +482,8 @@ class SettingsWindow(ctk.CTkToplevel):
                          "«пРИВЕТ» → «Привет», и Caps Lock выключится")
         self._switch_row(card, self.var_two_caps, "Исправлять ДВе ЗАглавные",
                          "«ПРивет» → «Привет»: Shift отпущен на букву позже. Двойной Shift вернёт как было")
+        self._switch_row(card, self.var_save_en, "Английская раскладка при сохранении файла",
+                         "Когда открывается окно «Сохранить как», раскладка переключится на английскую")
         self._switch_row(card, self.var_uzbek, "Я пишу и по-узбекски",
                          "Узбекские слова латиницей и кириллицей не исправляются: «олдин» не станет «один», "
                          "«жуда» — «;elf»")
@@ -612,6 +616,72 @@ class SettingsWindow(ctk.CTkToplevel):
         self.refresh_rules()
         return page
 
+    def _snippets_tab(self):
+        page = self._page("Дописывание", "Начните печатать — Switcher допишет остальное: «015» сразу станет "
+                                         "«015-510-400_4_». Срабатывает в начале слова; двойной Shift сразу после "
+                                         "вернёт то, что вы набрали.", scroll=False)
+        buttons = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        buttons.pack(side="bottom", fill="x", pady=(12, 0))
+        self._button(buttons, "Добавить…", self.add_snippet).pack(side="left")
+        self._button(buttons, "Изменить…", self.edit_snippet).pack(side="left", padx=8)
+        self._button(buttons, "Удалить выбранные", self.remove_snippets, danger=True).pack(side="right")
+        card = self._card(page, expand=True)
+        self.snippet_tree = ttk.Treeview(card, columns=("start", "whole"), show="headings", style="Switcher.Treeview")
+        for col, title, width in (("start", "Начинаю печатать", 160), ("whole", "Switcher допишет", 380)):
+            self.snippet_tree.heading(col, text=title, anchor="w")
+            self.snippet_tree.column(col, width=width, minwidth=60, anchor="w", stretch=col == "whole")
+        scroll = ctk.CTkScrollbar(card, command=self.snippet_tree.yview)
+        self.snippet_tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y", padx=(0, 4), pady=8)
+        self.snippet_tree.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=10)
+        self.snippet_tree.bind("<Double-1>", lambda event: self.edit_snippet())
+        self.refresh_snippets()
+        return page
+
+    def refresh_snippets(self) -> None:
+        self.snippet_tree.delete(*self.snippet_tree.get_children())
+        for start, whole in sorted(self.config_copy.snippets.items()):
+            self.snippet_tree.insert("", "end", iid=start, values=(start, whole))
+
+    def _save_snippets(self, snippets: dict[str, str]) -> None:
+        """Snippets take effect at once, like rules; the rest of the settings still wait for «Сохранить»."""
+        self.config_copy.snippets = dict(snippets)
+        live = copy.deepcopy(self.app.config)
+        live.snippets = dict(snippets)
+        self.app.update_config(live)
+        self.refresh_snippets()
+
+    def _ask_snippet(self, start: str = "") -> tuple[str, str] | None:
+        if not start:
+            start = (self._ask("Дописывание", "Что вы начинаете печатать (например, 015):") or "").strip()
+            if not start:
+                return None
+            if any(ch.isspace() for ch in start):
+                messagebox.showinfo("Switcher", "Начало — без пробелов: Switcher дописывает одно слово.", parent=self)
+                return None
+        current = self.config_copy.snippets.get(start, "")
+        hint = f"\nСейчас: {current}" if current else ""
+        whole = (self._ask("Дописывание", f"Во что превращать «{start}» целиком "
+                                          f"(например, {start}-510-400_4_):{hint}") or "").strip()
+        return (start, whole) if whole else None
+
+    def add_snippet(self) -> None:
+        found = self._ask_snippet()
+        if found:
+            self._save_snippets({**self.config_copy.snippets, found[0]: found[1]})
+
+    def edit_snippet(self) -> None:
+        selected = self.snippet_tree.selection()
+        if not selected:
+            return self.add_snippet()
+        found = self._ask_snippet(selected[0])
+        if found:
+            self._save_snippets({**self.config_copy.snippets, found[0]: found[1]})
+
+    def remove_snippets(self) -> None:
+        keep = {k: v for k, v in self.config_copy.snippets.items() if k not in self.snippet_tree.selection()}
+        self._save_snippets(keep)
+
     def _stats_tab(self):
         page = self._page("Что я о вас знаю", "Всё, что Switcher выучил о вашей печати. Данные хранятся только "
                                               "на этом компьютере.", scroll=False)
@@ -632,7 +702,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.var_auto_update = tk.BooleanVar(value=self.config_copy.updates.check_automatically)
         card = self._card(page, "Проверка")
         self._switch_row(card, self.var_auto_update, "Проверять обновления автоматически",
-                         "Дважды в день. О новой версии Switcher скажет уведомлением у часов")
+                         "Каждые три часа. О новой версии Switcher скажет уведомлением у часов")
         row = self._row(card, "Проверить сейчас")
         self.check_button = self._button(row, "Проверить", lambda: self.check_updates(force=True), width=110)
         self.check_button.pack(side="right")
@@ -962,6 +1032,7 @@ class SettingsWindow(ctk.CTkToplevel):
         new.fix_caps_lock = self.var_caps.get()
         new.fix_two_capitals = self.var_two_caps.get()
         new.writes_uzbek = self.var_uzbek.get()
+        new.english_in_save_dialogs = self.var_save_en.get()
         new.early_switch = self.var_early.get()
         new.autocorrect = self.var_autocorrect.get()
         new.threshold = round(float(self.var_threshold.get()), 1)

@@ -267,3 +267,15 @@ def test_version_list_can_be_refreshed(window):
     window.show_releases(releases)
     window.show_releases(releases)  # "Проверить" again: the list is rebuilt, not broken halfway
     assert [b.cget("text") for b in window.release_buttons] == ["Обновить", "Откатить"]
+
+
+def test_snippets_take_effect_at_once(window, monkeypatch):
+    answers = iter(["015", "015-510-400_4_"])
+    monkeypatch.setattr(window, "_ask", lambda title, text: next(answers))
+    window.add_snippet()
+    assert window.app.saved[-1].snippets == {"015": "015-510-400_4_"}
+    assert window.snippet_tree.get_children() == ("015",)
+    window.snippet_tree.selection_set("015")
+    window.remove_snippets()
+    assert window.app.saved[-1].snippets == {} and window.snippet_tree.get_children() == ()
+    assert window.collect().snippets == {}

@@ -746,3 +746,58 @@ def test_a_new_hook_forgets_held_keys(make_screen):
     s._event("press", "hook-restored")
     s.keys("ghbdtn ")
     assert s.text == "привет "
+
+
+def snippet_config(**snippets):
+    config = Config()
+    config.snippets = {"015": "015-510-400_4_", "525": "525-459_4_", "745": "745-605_4_", **snippets}
+    return config
+
+
+def test_a_snippet_is_completed_as_soon_as_its_start_is_typed(make_screen):
+    s = make_screen(snippet_config(), layout=EN)
+    s.keys("015")
+    assert s.text == "015-510-400_4_"
+    s.keys("12 745")
+    assert s.text == "015-510-400_4_12 745-605_4_"
+
+
+def test_only_at_the_start_of_a_word(make_screen):
+    s = make_screen(snippet_config(), layout=EN)
+    s.keys("1015 20150 ")
+    assert s.text == "1015 20150 "
+
+
+def test_double_shift_takes_the_completion_back(make_screen):
+    s = make_screen(snippet_config(), layout=RU)
+    s.keys("525")
+    assert s.text == "525-459_4_"
+    s.double_shift()
+    assert s.text == "525"
+    s.keys("1 ")
+    assert s.text == "5251 "
+
+
+def test_a_shorter_snippet_waits_for_the_end_of_the_word(make_screen):
+    s = make_screen(snippet_config(**{"01": "01-ТЕСТ"}), layout=EN)
+    s.keys("01 ")
+    assert s.text == "01-ТЕСТ "
+    s.keys("015")
+    assert s.text == "01-ТЕСТ 015-510-400_4_"
+
+
+def test_a_snippet_typed_on_the_wrong_layout(make_screen):
+    s = make_screen(snippet_config(**{"адр": "г. Ташкент, ул. Навои 1"}), layout=EN)
+    s.keys("flh")  # "адр" on the English layout
+    assert s.text == "г. Ташкент, ул. Навои 1"
+
+
+def test_save_as_switches_to_english(make_screen):
+    s = make_screen(layout=RU)
+    s._event("press", "save-dialog")
+    assert s.layout == EN
+    config = Config()
+    config.english_in_save_dialogs = False
+    s = make_screen(config, layout=RU)
+    s._event("press", "save-dialog")
+    assert s.layout == RU

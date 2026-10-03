@@ -91,6 +91,7 @@ class WindowsBackend(BaseBackend):
         self._watchdog = None
         self._watchdog_retry_at = 0.0
         self._away = False
+        self._save_dialogs = None
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -193,8 +194,25 @@ class WindowsBackend(BaseBackend):
         self._watchdog = HookWatchdog(self._restart_keyboard_hook)
         self._watchdog_retry_at = time.monotonic() + 30  # give it time to start
         self._watchdog.start()
+        try:
+            from .win_events import SaveDialogWatcher
+
+            self._save_dialogs = SaveDialogWatcher(self._save_dialog_opened)
+            self._save_dialogs.start()
+        except Exception:
+            log.exception("could not watch for save dialogs")
+
+    def _save_dialog_opened(self, hwnd: int) -> None:
+        from ..controller import KeyEvent
+
+        if self._sink:
+            self._sink(KeyEvent("press", "save-dialog", layout=self.current_layout(), app=self.active_app(),
+                                time=time.monotonic()))
 
     def stop(self) -> None:
+        if self._save_dialogs is not None:
+            self._save_dialogs.stop()
+            self._save_dialogs = None
         if self._watchdog is not None:
             self._watchdog.stop()
             self._watchdog = None

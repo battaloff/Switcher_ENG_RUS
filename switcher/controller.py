@@ -118,6 +118,7 @@ class Controller:
         self.undo_target: Token | None = None
         self.manual_target: tuple[Token, str, tuple[str, str] | None, float] | None = None
         self.early_rejected: tuple[str, str] | None = None  # (keys, lang) of an early switch erased by the user
+        self._expansion: tuple[str, str] | None = None  # (typed, written) of the last snippet, for undo
         self._selection_unsure = False  # the selection fix made a bold guess
         self._selection_memo: tuple[str, float] | None = None  # selection left as is: a second press swaps it
         self._deferred: str | None = None  # a hotkey waiting for its modifiers to be released
@@ -157,6 +158,12 @@ class Controller:
             return
         if ev.key == "mouse":
             self.reset("mouse")
+            return
+        if ev.key == "save-dialog":
+            # "Save As" opened: file names are mostly typed in English
+            if self.enabled and self.config.english_in_save_dialogs and self.layout != EN:
+                self._switch_layout(EN)
+            self.reset("save-dialog")
             return
         if ev.key in MODIFIERS:
             self.mods.add(ev.key)
@@ -244,6 +251,7 @@ class Controller:
         self.undo_target = None
         self.manual_target = None
         self.early_rejected = None
+        self._expansion = None
         self._generation += 1
 
     # -- typing --------------------------------------------------------------
@@ -259,6 +267,7 @@ class Controller:
     def _on_char(self, ev: KeyEvent, now: float) -> None:
         self._generation += 1
         self.undo_target = None
+        self._expansion = None
         found = self._stroke_for(ev)
         if found is None:
             # a character neither layout types (emoji, §...): end the word untouched
@@ -289,8 +298,55 @@ class Controller:
             cur.has_letters = True
         cur.strokes.append(stroke)
         cur.chars.append(char)
+        if self._expand_snippet():
+            return
         if letter:
             self._maybe_switch_early()
+
+    # -- completing the user's snippets ("015" → "015-510-400_4_") ---------------
+
+    def _snippet_for(self, cur: Token) -> tuple[str, str] | None:
+        """(typed start, whole text) when the word so far is the start of one of the user's snippets.
+
+        Also on the wrong layout: "flh" is "адр".
+        """
+        snippets = self.config.snippets
+        typed = cur.typed_text
+        if typed in snippets:
+            return typed, snippets[typed]
+        if cur.typed_lang in (EN, RU):
+            alt = self.keyboard.text(cur.strokes, other(cur.typed_lang))
+            if alt in snippets:
+                return alt, snippets[alt]
+        return None
+
+    def _expand_snippet(self, delim: str = "") -> bool:
+        """Write the rest of a snippet the moment its start is typed as a word of its own.
+
+        When a longer snippet begins the same way ("01" and "015"), the shorter one waits for the
+        end of the word (``delim``).
+        """
+        cur = self.cur
+        if (not self.config.snippets or cur is None or not self.enabled or cur.reopened_from is not None
+                or self._excluded()):
+            return False
+        found = self._snippet_for(cur)
+        if found is None:
+            return False
+        start, whole = found
+        if not delim and any(s != start and s.startswith(start) for s in self.config.snippets):
+            return False
+        typed = cur.typed_text
+        if not delim and start == typed and whole.startswith(typed):
+            self._rewrite(0, whole[len(typed):])  # just go on typing: nothing on screen changes
+        else:
+            self._rewrite(len(typed) + len(delim), whole + delim)
+        self.cur = None
+        self.history.clear()
+        self.undo_target = None
+        self._expansion = (typed + delim, whole + delim)
+        self.learner.profile.log_event("snippet", app=self.app, typed_text=typed, final_text=whole)
+        return True
 
     def _maybe_switch_early(self) -> None:
         """Punto-style: switch as soon as the first letters show the layout is wrong.
@@ -330,6 +386,7 @@ class Controller:
     def _on_backspace(self) -> None:
         self._generation += 1
         self.undo_target = None
+        self._expansion = None
         self.manual_target = None
         cur = self.cur
         if cur and cur.strokes:
@@ -363,7 +420,10 @@ class Controller:
 
     def _on_delimiter(self, key: str) -> None:
         self._generation += 1
+        self._expansion = None
         ch = DELIMITERS[key]
+        if self.cur and self.cur.strokes and self._expand_snippet(ch):
+            return
         if self.cur and self.cur.strokes:
             self._commit(ch, allow_change=key != "enter" or self.config.convert_on_enter)
         elif self.history:
@@ -782,6 +842,11 @@ class Controller:
     def convert_last(self) -> None:
         """Undo our last change, or convert the word the user is on / just finished."""
         now = self._now
+        if self._expansion is not None and self.cur is None:
+            typed, written = self._expansion  # the snippet was not wanted: back to what was typed
+            self._expansion = None
+            self._rewrite(len(written), typed)
+            return
         if self.undo_target is not None and self.cur is None and self.history and self.history[-1] is self.undo_target:
             self._undo(self.undo_target)
             return

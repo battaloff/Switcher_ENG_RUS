@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGES = ["main", "keys", "ai", "rules", "stats", "updates"]
+PAGES = ["main", "keys", "snippets", "ai", "rules", "stats", "updates"]
 
 
 def shoot(mode: str, out: Path) -> None:
@@ -36,7 +36,7 @@ def shoot(mode: str, out: Path) -> None:
                                date=date, url="", asset_url="", asset_name="", size=31_000_000)
 
     class App:
-        config = Config()
+        config = Config(snippets={"015": "015-510-400_4_", "525": "525-459_4_", "745": "745-605_4_"})
         profile = Profile(":memory:")
         keyboard = DEFAULT_KEYBOARD
         stop_event = threading.Event()
