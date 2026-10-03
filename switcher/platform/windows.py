@@ -45,6 +45,13 @@ kernel32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD,
                                                 ctypes.POINTER(wintypes.DWORD))
 kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+advapi32.OpenProcessToken.restype = wintypes.BOOL
+advapi32.GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                         ctypes.POINTER(wintypes.DWORD))
+advapi32.GetTokenInformation.restype = wintypes.BOOL
 
 
 class GUITHREADINFO(ctypes.Structure):
@@ -60,12 +67,16 @@ user32.GetGUIThreadInfo.restype = wintypes.BOOL
 
 WM_INPUTLANGCHANGEREQUEST = 0x0050
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+TOKEN_QUERY, TOKEN_ELEVATION = 0x0008, 20
+ERROR_ACCESS_DENIED = 5
 VK_CAPITAL = 0x14
 VK_BACK, VK_TAB, VK_RETURN = 0x08, 0x09, 0x0D
 # Tag in dwExtraInfo of every key we send.  The hook drops exactly these, so keys
 # the user (or an automated check) types while we are typing are never lost.
 OWN_INPUT = 0x53574348  # "SWCH"
 _PRIMARY_LANG = {0x09: EN, 0x19: RU}
+# Windows' own tools that always run as administrator: nobody types text there, so no warning
+_SYSTEM_TOOLS = {"taskmgr", "mmc", "regedit", "consent", "logonui", "useraccountcontrolsettings"}
 
 _VK = {0x30 + i: str(i) for i in range(10)}
 _VK.update({0x41 + i: chr(ord("a") + i) for i in range(26)})
@@ -81,6 +92,37 @@ def _lang_of(hkl: int | None) -> str | None:
     return _PRIMARY_LANG.get(hkl & 0x3FF)
 
 
+def _token_elevated(process) -> bool | None:
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
+        return True if ctypes.get_last_error() == ERROR_ACCESS_DENIED else None
+    try:
+        elevated, size = wintypes.DWORD(), wintypes.DWORD()
+        if not advapi32.GetTokenInformation(token, TOKEN_ELEVATION, ctypes.byref(elevated),
+                                            ctypes.sizeof(elevated), ctypes.byref(size)):
+            return None
+        return bool(elevated.value)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def process_elevated(pid: int | None = None) -> bool | None:
+    """Whether a process (this one by default) runs as administrator; None when that cannot be told.
+
+    Windows keeps a program that is not elevated out of an elevated one: its keyboard hook gets no
+    keys typed there, and the keys it sends are dropped.
+    """
+    if pid is None:
+        return _token_elevated(kernel32.GetCurrentProcess())
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        return _token_elevated(handle)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 class WindowsBackend(BaseBackend):
     VK_CODES = _VK
 
@@ -93,6 +135,13 @@ class WindowsBackend(BaseBackend):
         self._watchdog_retry_at = 0.0
         self._away = False
         self._save_dialogs = None
+        try:
+            self._self_elevated = process_elevated()
+        except Exception:
+            log.exception("could not tell whether Switcher runs as administrator")
+            self._self_elevated = None
+        self._elevated_pids: dict[int, bool] = {}
+        self.elevated_apps: list[str] = []  # programs Windows keeps Switcher out of
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -137,6 +186,9 @@ class WindowsBackend(BaseBackend):
         posted = bool(user32.PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, ctypes.c_ssize_t(hkl).value))
         if posted:
             self._pending_layout = (lang, time.monotonic())
+        else:
+            log.warning("could not ask %s to switch to %s (error %d)", self.active_app() or "?", lang,
+                        ctypes.get_last_error())
         return posted
 
     def active_app(self) -> str:
@@ -145,18 +197,64 @@ class WindowsBackend(BaseBackend):
         now = time.monotonic()
         if pid == cached_pid and now - stamp < 2.0:
             return name
-        name = ""
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
-            try:
-                size = wintypes.DWORD(1024)
-                buf = ctypes.create_unicode_buffer(size.value)
-                if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-                    name = os.path.splitext(os.path.basename(buf.value))[0]
-            finally:
-                kernel32.CloseHandle(handle)
+        name = self._process_name(pid)
         self._app_cache = (pid, now, name)
         return name
+
+    @staticmethod
+    def _process_name(pid: int) -> str:
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(1024)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return os.path.splitext(os.path.basename(buf.value))[0]
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
+
+    def _out_of_reach(self, pid: int) -> bool:
+        """Whether Windows keeps Switcher out of this process (it runs as administrator, Switcher does not).
+
+        Told once per process; the first time also in the log and, once per program, to the user.
+        """
+        if not pid or pid == os.getpid() or self._self_elevated:
+            return False
+        known = self._elevated_pids.get(pid)
+        if known is not None:
+            return known
+        if len(self._elevated_pids) > 1000:  # process ids get reused
+            self._elevated_pids.clear()
+        elevated = self._elevated_pids[pid] = bool(process_elevated(pid))
+        if not elevated:
+            return False
+        name = self._process_name(pid) or "программа"
+        log.warning("%s runs as administrator: Windows lets Switcher neither see nor type keys there", name)
+        if name not in self.elevated_apps and name.lower() not in _SYSTEM_TOOLS:
+            self.elevated_apps.append(name)
+            self.notify(f"{name} запущена от имени администратора — Windows не даёт Switcher в ней "
+                        "исправлять и дописывать. Запустите её обычным образом (или Switcher — тоже от "
+                        "имени администратора).")
+        return True
+
+    @staticmethod
+    def _window_pid(hwnd) -> int:
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value
+
+    def _foreground_changed(self, hwnd: int) -> None:
+        self._out_of_reach(self._window_pid(hwnd))
+
+    def _keys_go_elsewhere(self) -> bool:
+        """The hook misses keys because they go to a program Windows keeps it out of: not a dead hook."""
+        try:
+            return self._out_of_reach(self._window_pid(user32.GetForegroundWindow()))
+        except Exception:
+            log.exception("could not check the program in front")
+            return False
 
     def _describe(self, key):
         """The char the focused window gets, from the physical key and *its* layout.
@@ -195,13 +293,13 @@ class WindowsBackend(BaseBackend):
         super().start(sink)
         from .win_watchdog import HookWatchdog
 
-        self._watchdog = HookWatchdog(self._restart_keyboard_hook)
+        self._watchdog = HookWatchdog(self._restart_keyboard_hook, self._keys_go_elsewhere)
         self._watchdog_retry_at = time.monotonic() + 30  # give it time to start
         self._watchdog.start()
         try:
             from .win_events import SaveDialogWatcher
 
-            self._save_dialogs = SaveDialogWatcher(self._save_dialog_opened)
+            self._save_dialogs = SaveDialogWatcher(self._save_dialog_opened, on_foreground=self._foreground_changed)
             self._save_dialogs.start()
         except Exception:
             log.exception("could not watch for save dialogs")
@@ -271,7 +369,7 @@ class WindowsBackend(BaseBackend):
             from .win_watchdog import HookWatchdog
 
             watchdog.stop()
-            self._watchdog = HookWatchdog(self._restart_keyboard_hook)
+            self._watchdog = HookWatchdog(self._restart_keyboard_hook, self._keys_go_elsewhere)
             self._watchdog.start()
             fixed = fixed or "watchdog"
         return fixed

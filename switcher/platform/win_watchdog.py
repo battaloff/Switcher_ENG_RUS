@@ -89,11 +89,15 @@ def _notify_on_wake(hwnd) -> None:
 
 
 class HookWatchdog:
-    def __init__(self, restart: Callable[[bool], None]):
-        """``restart(missed)``: put the hook in afresh; ``missed``: keys went unseen meanwhile."""
+    def __init__(self, restart: Callable[[bool], None], elsewhere: Callable[[], bool] | None = None):
+        """``restart(missed)``: put the hook in afresh; ``missed``: keys went unseen meanwhile.
+
+        ``elsewhere()``: the keys go where the hook may not see them (an administrator's program).
+        """
         from .hook_health import MissDetector
 
         self._restart = restart
+        self._elsewhere = elsewhere
         self.detector = MissDetector()
         self._hwnd = None
         self._proc = WNDPROC(self._window_proc)  # keep a reference: Windows calls it
@@ -147,7 +151,7 @@ class HookWatchdog:
 
     def _window_proc(self, hwnd, msg, wparam, lparam):
         if msg == WM_INPUT:
-            if self.detector.raw_event():
+            if self.detector.raw_event(self._elsewhere):
                 self.restarts += 1
                 log.warning("keys arrive but the keyboard hook sees none (Windows removed it?): reinstalling")
                 threading.Thread(target=self._restart, args=(True,), name="switcher-hook-restart",

@@ -380,6 +380,16 @@ def main() -> int:
     check("keys are handled after Win+L and unlocking", "как дела ")
     print(f"   Switcher thought held before: {sorted(clear_keep_mods)}, now: {sorted(app.controller.mods)}")
 
+    from switcher.platform.windows import process_elevated
+
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(edit, ctypes.byref(pid))
+    own, other = process_elevated(), process_elevated(pid.value)
+    app.backend._foreground_changed(edit)  # must not fail
+    told = own is not None and other is not None
+    print(f"{'OK  ' if told else 'FAIL'} tells programs run as administrator (Switcher: {own}, Notepad: {other})")
+    results.append(told)
+
     report = app.diagnostics()
     print("self-check:\n" + report)
     healthy = "Обработка клавиш: работает" in report and "Перехват клавиатуры: работает" in report

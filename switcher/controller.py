@@ -350,6 +350,7 @@ class Controller:
         self.history.clear()
         self.undo_target = None
         self._expansion = (typed + delim, whole + delim)
+        log.info("snippet %r → %r in %s", typed, whole, self.app or "?")
         self.learner.profile.log_event("snippet", app=self.app, typed_text=typed, final_text=whole)
         return True
 

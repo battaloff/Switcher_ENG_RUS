@@ -150,10 +150,14 @@ def test_the_self_check_says_what_works_and_what_does_not(tmp_path, monkeypatch)
     listener = Listener()
     app.backend = SimpleNamespace(_listeners=[listener], keys_seen=12, last_key_at=time.monotonic() - 3,
                                   injected_dropped=0, accept_injected=False, _hkls={"en": 1, "ru": 2},
-                                  current_layout=lambda: "ru", active_app=lambda: "telegram", heal=lambda: None)
+                                  current_layout=lambda: "ru", active_app=lambda: "telegram", heal=lambda: None,
+                                  elevated_apps=["Acrobat"])
+    app.config.snippets = {"015": "015-510-400_4_"}
     app._start_worker()
     report = app.diagnostics()
     assert "Обработка клавиш: работает" in report and "Перехват клавиатуры: работает, нажатий 12" in report
+    assert "Дописывание: шаблонов 1" in report
+    assert "Запущены от имени администратора (Windows не пускает туда Switcher): Acrobat" in report
     assert "Раскладки Windows: en, ru; сейчас ru в telegram" in report and "Ошибки в журнале: нет" in report
     listener.alive = False
     app._worker_gen += 1  # the engine thread quits
@@ -215,3 +219,24 @@ def test_the_hook_watchdog_does_not_reinstall_in_a_burst():
     assert raw(10) == 1  # five minutes later it may try again
     d.hook_event()
     assert raw(5) == 0  # a working hook resets everything
+
+
+def test_keys_typed_in_an_administrators_program_do_not_make_the_watchdog_reinstall():
+    from switcher.platform.hook_health import MissDetector
+
+    now = [100.0]
+    d = MissDetector(clock=lambda: now[0])
+    asked = []
+
+    def elevated():
+        asked.append(1)
+        return True
+
+    fired = 0
+    for _ in range(200):  # a long file name typed in Acrobat run as administrator
+        now[0] += 0.1
+        fired += d.raw_event(elevated)
+    assert fired == 0 and asked  # the hook is fine: Windows just keeps it out of there
+    assert len(asked) < 40  # asked now and then, not on every key
+    fired = sum(d.raw_event(lambda: False) for _ in range(10))
+    assert fired == 1  # back in an ordinary program and still unseen: the hook did die

@@ -40,12 +40,19 @@ class MissDetector:
         self.missed = 0
         self.restarted_at = self.clock()
 
-    def raw_event(self) -> bool:
-        """Raw Input saw a key; True when the hook should be reinstalled now."""
+    def raw_event(self, elsewhere: Callable[[], bool] | None = None) -> bool:
+        """Raw Input saw a key; True when the hook should be reinstalled now.
+
+        ``elsewhere()`` tells whether the keys go where a hook gets none: a program run as
+        administrator.  Then the hook is fine, and reinstalling it would only lose the word typed.
+        """
         now = self.clock()
         self.missed += 1
         if (self.missed < self.MISSING or now - self.hook_seen_at < self.QUIET
                 or now - self.restarted_at < self.GRACE or now < self.paused_until):
+            return False
+        if elsewhere is not None and elsewhere():
+            self.missed = 0
             return False
         self.recent = [t for t in self.recent if now - t < self.WINDOW] + [now]
         if len(self.recent) > self.MAX_RESTARTS:

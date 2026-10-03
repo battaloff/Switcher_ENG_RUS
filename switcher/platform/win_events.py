@@ -75,8 +75,9 @@ def has_file_browser(hwnd) -> bool:
 
 
 class SaveDialogWatcher:
-    def __init__(self, on_save_dialog: Callable[[int], None]):
+    def __init__(self, on_save_dialog: Callable[[int], None], on_foreground: Callable[[int], None] | None = None):
         self._on_save_dialog = on_save_dialog
+        self._on_foreground = on_foreground
         self._proc = WINEVENTPROC(self._event)  # keep a reference: Windows calls it
         self._tid = 0
         self._seen: list[int] = []
@@ -118,6 +119,8 @@ class SaveDialogWatcher:
             return
         try:
             hwnd = int(hwnd)
+            if event == EVENT_SYSTEM_FOREGROUND and self._on_foreground is not None:
+                self._on_foreground(hwnd)
             if _class(hwnd) == "#32770" and hwnd not in self._seen and hwnd not in self._pending:
                 self._pending.add(hwnd)
                 self._check(hwnd, tries=10)

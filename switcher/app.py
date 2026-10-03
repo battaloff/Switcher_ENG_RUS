@@ -176,6 +176,13 @@ class App:
                      f"исправление опечаток {'вкл' if self.config.autocorrect else 'выкл'}; "
                      f"узбекский {'вкл' if self.config.writes_uzbek else 'выкл'}; "
                      f"Claude {'подключён' if self.ai_ready() else 'не подключён'}")
+        lines.append(f"Дописывание: шаблонов {len(self.config.snippets)}; английская раскладка при сохранении "
+                     f"файла {'вкл' if self.config.english_in_save_dialogs else 'выкл'}")
+        if getattr(b, "_self_elevated", False):
+            lines.append("Switcher запущен от имени администратора")
+        elevated = getattr(b, "elevated_apps", [])
+        if elevated:
+            lines.append("Запущены от имени администратора (Windows не пускает туда Switcher): " + ", ".join(elevated))
         offset = self.profile.threshold_offset(app_name) if app_name and app_name != "?" else 0.0
         if offset > 0.5:
             lines.append(f"В «{app_name}» Switcher стал осторожнее (+{offset:.1f}) после ваших отмен")
