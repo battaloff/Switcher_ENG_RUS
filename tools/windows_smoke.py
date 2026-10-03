@@ -42,6 +42,41 @@ user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BO
 user32.LoadKeyboardLayoutW.argtypes = (wintypes.LPCWSTR, wintypes.UINT)
 user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
 WM_SETTEXT, WM_GETTEXT, EM_SETSEL = 0x000C, 0x000D, 0x00B1
+ON_CI = os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+def _escape(text: str) -> str:
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")[:4000]
+
+
+class _Annotated:
+    """On CI every "FAIL" line also becomes an error annotation: readable without the full log."""
+
+    def __init__(self, out):
+        self.out, self.pending = out, ""
+
+    def write(self, text):
+        self.out.write(text)
+        self.pending += text
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            if line.startswith("FAIL"):
+                self.out.write(f"::error title=Notepad E2E::{_escape(line)}\n")
+        return len(text)
+
+    def flush(self):
+        self.out.flush()
+
+
+if ON_CI:
+    sys.stdout = _Annotated(sys.stdout)
+
+
+def note(title: str, text: str) -> None:
+    """Details worth reading even when everything passed (an annotation on CI)."""
+    print(f"   {title}: {text}")
+    if ON_CI:
+        print(f"::notice title={title}::{_escape(text)}")
 
 
 def class_name(hwnd) -> str:
@@ -171,12 +206,13 @@ def main() -> int:
         got = screen()
         ok = got == expected
         results.append(ok)
+        c = app.controller
+        tracked = "" if ok else (f"; tracked {[(t.text, t.lang, t.change) for t in c.history]}, "
+                                 f"cur {c.cur.typed_text if c.cur else None!r}")
+        fg = user32.GetForegroundWindow()
         print(f"{'OK  ' if ok else 'FAIL'} {label}: {got!r} (expected {expected!r}); "
-              f"layout {app.backend.current_layout()}, app {app.backend.active_app()!r}")
-        if not ok:
-            c = app.controller
-            print("     tracked:", [(t.text, t.lang, t.change) for t in c.history],
-                  "cur:", c.cur.typed_text if c.cur else None)
+              f"layout {app.backend.current_layout()}, app {app.backend.active_app()!r}, "
+              f"in front {class_name(fg) if fg else None!r}{tracked}")
 
     layout(EN)
     type_keys("ghbdtn ")
@@ -248,22 +284,17 @@ def main() -> int:
     app.config.snippets_only_in_save_dialogs = True  # back to the default: Save As below completes the name
 
     # AutoHotkey: scripts run from Switcher's manager, and what they type is not Switcher's to fix
-    if app.ahk.interpreters():
-        print("   AutoHotkey:", app.ahk.describe_install())
-        script = Path(os.environ["SWITCHER_HOME"]) / "smoke.ahk"
-        script.write_text("#Requires AutoHotkey v2.0\n#SingleInstance Force\n::zzq::готово\n", encoding="utf-8-sig")
-        broken = Path(os.environ["SWITCHER_HOME"]) / "broken.ahk"
-        broken.write_text("#Requires AutoHotkey v2.0\nx := 1\nif (x {\n", encoding="utf-8-sig")
-        good, bad = app.ahk.check(str(script)), app.ahk.check(str(broken))
-        checked = good[0] is True and bad[0] is False
-        print(f"{'OK  ' if checked else 'FAIL'} AutoHotkey syntax check: {good} / {bad}")
-        results.append(checked)
-        error = app.ahk.start(str(script))
+    ahk_script = Path(os.environ["SWITCHER_HOME"]) / "smoke.ahk"
+    ahk_found = app.ahk.interpreters()
+    if ahk_found:
+        note("AutoHotkey", f"{app.ahk.describe_install()}; {ahk_found}")
+        ahk_script.write_text("#Requires AutoHotkey v2.0\n#SingleInstance Force\n::zzq::готово\n", encoding="utf-8-sig")
+        error = app.ahk.start(str(ahk_script))
         deadline = time.time() + 10
-        while not app.ahk.is_running(str(script)) and time.time() < deadline:
+        while not app.ahk.is_running(str(ahk_script)) and time.time() < deadline:
             time.sleep(0.3)
-        started = error is None and app.ahk.is_running(str(script))
-        print(f"{'OK  ' if started else 'FAIL'} a script started from Switcher runs: {error}; "
+        started = error is None and app.ahk.is_running(str(ahk_script))
+        print(f"{'OK  ' if started else 'FAIL'} a script started from Switcher runs: error {error!r}; "
               f"running {app.ahk.running(fresh=True)}")
         results.append(started)
         time.sleep(1)
@@ -274,20 +305,22 @@ def main() -> int:
         check("an AutoHotkey hotstring types its text", "готово ")
         type_keys("ghbdtn ")
         check("Switcher goes on right after AutoHotkey typed", "готово привет ")
-        print(f"   tracked after AutoHotkey: dropped {app.backend.injected_dropped}, "
-              f"accept injected {app.backend.accept_injected}")
-        reloaded = app.ahk.reload(str(script)) is None
+        note("AutoHotkey keys", f"dropped injected {app.backend.injected_dropped}, "
+                                f"accept injected {app.backend.accept_injected}")
+        reloaded = app.ahk.reload(str(ahk_script))
         time.sleep(2)
-        reloaded = reloaded and app.ahk.is_running(str(script))
-        stopped = app.ahk.stop(str(script)) is None
+        running_after_reload = app.ahk.is_running(str(ahk_script))
+        stopped = app.ahk.stop(str(ahk_script))
         deadline = time.time() + 10
-        while app.ahk.is_running(str(script)) and time.time() < deadline:
+        while app.ahk.is_running(str(ahk_script)) and time.time() < deadline:
             time.sleep(0.3)
-        stopped = stopped and not app.ahk.is_running(str(script))
-        print(f"{'OK  ' if reloaded and stopped else 'FAIL'} reload and stop from Switcher: {reloaded}, {stopped}")
-        results.append(reloaded and stopped)
+        ok = reloaded is None and running_after_reload and stopped is None and not app.ahk.is_running(str(ahk_script))
+        print(f"{'OK  ' if ok else 'FAIL'} reload and stop from Switcher: reload {reloaded!r}, running after "
+              f"{running_after_reload}, stop {stopped!r}, running now {app.ahk.running(fresh=True)}")
+        results.append(ok)
     elif os.environ.get("SWITCHER_EXPECT_AHK") == "1":
-        print("FAIL AutoHotkey was installed but Switcher did not find it")
+        print("FAIL AutoHotkey was installed but Switcher did not find it: "
+              f"roots {app.ahk.system.install_roots()}")
         results.append(False)
     else:
         print("SKIP AutoHotkey is not installed")
@@ -451,6 +484,22 @@ def main() -> int:
     app.stop_event.set()
     runner.join(timeout=5)
     notepad.kill()
+    if ahk_found:  # last: a check that goes wrong may leave a window that takes the focus
+        broken = Path(os.environ["SWITCHER_HOME"]) / "broken.ahk"
+        broken.write_text("#Requires AutoHotkey v2.0\nx := 1\nif (x {\n", encoding="utf-8-sig")
+        exe = ahk_found[0].path
+        for args in (["/ErrorStdOut=UTF-8", "/validate"], ["/ErrorStdOut=UTF-8", "/iLib", "NUL"]):
+            for path in (ahk_script, broken):
+                try:
+                    code, out = app.ahk.system.run([exe, *args, str(path)], timeout=10)
+                except Exception as exc:
+                    code, out = None, repr(exc)
+                note("AutoHotkey check", f"{' '.join(args)} {path.name}: code {code}, output {out.strip()[:300]!r}")
+        good, bad = app.ahk.check(str(ahk_script)), app.ahk.check(str(broken))
+        checked = good[0] is True and bad[0] is False and bad[2] is not None
+        print(f"{'OK  ' if checked else 'FAIL'} AutoHotkey syntax check: good {good}, broken {bad}")
+        results.append(checked)
+
     print("PASSED" if all(results) else "FAILED")
     return 0 if all(results) else 1
 
