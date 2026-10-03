@@ -184,3 +184,34 @@ def test_injected_keys_are_trusted_when_they_are_all_there_is():
     backend._on_press("f", injected=True)
     assert backend.accept_injected and emitted == ["b", "f"] and len(notes) == 1
     assert backend.injected_dropped == 4 and backend.keys_seen == 2
+
+
+def test_the_hook_watchdog_does_not_reinstall_in_a_burst():
+    from switcher.platform.hook_health import MissDetector
+
+    now = [100.0]
+    d = MissDetector(clock=lambda: now[0])
+
+    def raw(n, step=0.05):
+        fired = 0
+        for _ in range(n):
+            now[0] += step
+            fired += d.raw_event()
+        return fired
+
+    d.hook_event()
+    assert raw(8) == 0  # only 0.4 s since the hook last saw a key: maybe it is just slow
+    assert raw(20) == 1  # silent for over a second: reinstall, once
+    assert raw(20) == 0  # the new hook gets two seconds before it is judged
+    now[0] += 2
+    assert raw(10) == 1
+    now[0] += 2
+    assert raw(10) == 1
+    now[0] += 2
+    assert raw(10) == 0  # a fourth time within a minute: stop fighting, pause instead
+    now[0] += 290
+    assert raw(10) == 0
+    now[0] += 20
+    assert raw(10) == 1  # five minutes later it may try again
+    d.hook_event()
+    assert raw(5) == 0  # a working hook resets everything

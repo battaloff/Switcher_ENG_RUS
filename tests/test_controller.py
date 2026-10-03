@@ -801,3 +801,19 @@ def test_save_as_switches_to_english(make_screen):
     s = make_screen(config, layout=RU)
     s._event("press", "save-dialog")
     assert s.layout == RU
+
+
+def test_a_snippet_survives_the_save_dialog_switch_coming_late(make_screen):
+    s = make_screen(snippet_config(), layout=RU)
+    s.keys("01")
+    s._event("press", "save-dialog")  # the dialog was slow to set up: we switch while the user types
+    s.keys("5")
+    assert s.text == "015-510-400_4_" and s.layout == EN
+
+
+def test_a_proactive_new_hook_does_not_forget_the_word(make_screen):
+    s = make_screen(snippet_config(), layout=EN)
+    s.keys("52")
+    s._event("press", "hook-reinstalled")  # back after a break: nothing was missed
+    s.keys("5")
+    assert s.text == "525-459_4_"

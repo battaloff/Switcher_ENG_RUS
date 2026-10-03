@@ -243,6 +243,11 @@ class WindowsBackend(BaseBackend):
             return 0.0
         return ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
 
+    def _restart_keyboard_hook(self, missed: bool = True) -> None:
+        super()._restart_keyboard_hook(missed)
+        if self._watchdog is not None:
+            self._watchdog.hook_restarted()
+
     def heal(self) -> str | None:
         fixed = super().heal()
         idle = self.idle_seconds()
@@ -253,7 +258,7 @@ class WindowsBackend(BaseBackend):
             # unnoticed), a fresh hook costs nothing
             self._away = False
             log.info("back after a break: reinstalling the keyboard hook")
-            self._restart_keyboard_hook()
+            self._restart_keyboard_hook(missed=False)
             fixed = fixed or "hook after a break"
         watchdog = self._watchdog
         if watchdog is not None and not watchdog.running and time.monotonic() > self._watchdog_retry_at:

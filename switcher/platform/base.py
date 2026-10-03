@@ -111,8 +111,12 @@ class BaseBackend:
             return "keyboard"
         return None
 
-    def _restart_keyboard_hook(self) -> None:
-        """Replace the keyboard listener (its hook is gone); what was typed meanwhile is unknown."""
+    def _restart_keyboard_hook(self, missed: bool = True) -> None:
+        """Replace the keyboard listener.
+
+        ``missed``: its hook was gone and keys typed meanwhile are unknown (the word being typed is
+        forgotten); otherwise a precaution (after a break) that must not disturb the typing.
+        """
         with self._lock:
             if not self._listeners:
                 return
@@ -127,7 +131,8 @@ class BaseBackend:
             listener.start()
             self._listeners[0] = listener
         if self._sink:
-            self._sink(KeyEvent("press", "hook-restored", app=self.active_app(), time=time.monotonic()))
+            self._sink(KeyEvent("press", "hook-restored" if missed else "hook-reinstalled", app=self.active_app(),
+                                time=time.monotonic()))
 
     def stop(self) -> None:
         for listener in self._listeners:

@@ -119,6 +119,7 @@ class Controller:
         self.manual_target: tuple[Token, str, tuple[str, str] | None, float] | None = None
         self.early_rejected: tuple[str, str] | None = None  # (keys, lang) of an early switch erased by the user
         self._expansion: tuple[str, str] | None = None  # (typed, written) of the last snippet, for undo
+        self._typed_at = float("-inf")  # the last character, delimiter or backspace
         self._selection_unsure = False  # the selection fix made a bold guess
         self._selection_memo: tuple[str, float] | None = None  # selection left as is: a second press swaps it
         self._deferred: str | None = None  # a hotkey waiting for its modifiers to be released
@@ -159,11 +160,14 @@ class Controller:
         if ev.key == "mouse":
             self.reset("mouse")
             return
+        if ev.key == "hook-reinstalled":
+            return  # a precaution after a break: the word being typed is still right
         if ev.key == "save-dialog":
             # "Save As" opened: file names are mostly typed in English
             if self.enabled and self.config.english_in_save_dialogs and self.layout != EN:
                 self._switch_layout(EN)
-            self.reset("save-dialog")
+            if now - self._typed_at > 1.5:  # a slow dialog may be noticed after typing began
+                self.reset("save-dialog")
             return
         if ev.key in MODIFIERS:
             self.mods.add(ev.key)
@@ -265,6 +269,7 @@ class Controller:
         return None
 
     def _on_char(self, ev: KeyEvent, now: float) -> None:
+        self._typed_at = now
         self._generation += 1
         self.undo_target = None
         self._expansion = None
@@ -384,6 +389,7 @@ class Controller:
         return bool(old_strokes) and canonical_keys(old_strokes).startswith(canonical_keys(cur.strokes))
 
     def _on_backspace(self) -> None:
+        self._typed_at = self._now
         self._generation += 1
         self.undo_target = None
         self._expansion = None
@@ -419,6 +425,7 @@ class Controller:
         self.reset("backspace")
 
     def _on_delimiter(self, key: str) -> None:
+        self._typed_at = self._now
         self._generation += 1
         self._expansion = None
         ch = DELIMITERS[key]

@@ -243,6 +243,18 @@ def main() -> int:
     saved = class_name(fg) == "#32770" and lang == EN
     print(f"{'OK  ' if saved else 'FAIL'} Save As switched to English: window {class_name(fg)!r}, layout {lang}")
     results.append(saved)
+    # the file name typed there with a snippet, as it is meant to be used
+    from switcher.platform.windows import GUITHREADINFO
+
+    type_keys("015")
+    time.sleep(1)
+    info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(fg, None), ctypes.byref(info))
+    buf = ctypes.create_unicode_buffer(512)
+    user32.SendMessageW(info.hwndFocus, WM_GETTEXT, 512, ctypes.addressof(buf))
+    named = buf.value == "015-510-400_4_"
+    print(f"{'OK  ' if named else 'FAIL'} a snippet in the file name field: {buf.value!r}")
+    results.append(named)
     tap(Key.esc)
     time.sleep(1)
 
@@ -299,7 +311,7 @@ def main() -> int:
     print(f"   keyboard hook removed behind Switcher's back: {bool(removed)}")
     clear()
     layout(EN)
-    type_keys("asdf")  # only Raw Input hears these now
+    type_keys("asdfasdf")  # only Raw Input hears these now (a second of silence, then 8 raw events)
     time.sleep(1.0)
     print(f"{'OK  ' if watchdog.restarts else 'FAIL'} watchdog noticed and reinstalled the hook: "
           f"{watchdog.restarts} time(s)")

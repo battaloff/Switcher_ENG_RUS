@@ -89,12 +89,12 @@ def _notify_on_wake(hwnd) -> None:
 
 
 class HookWatchdog:
-    #: raw key events in a row the hook did not see (a key down and up each: about four keystrokes)
-    MISSING = 8
+    def __init__(self, restart: Callable[[bool], None]):
+        """``restart(missed)``: put the hook in afresh; ``missed``: keys went unseen meanwhile."""
+        from .hook_health import MissDetector
 
-    def __init__(self, restart: Callable[[], None]):
         self._restart = restart
-        self._missed = 0
+        self.detector = MissDetector()
         self._hwnd = None
         self._proc = WNDPROC(self._window_proc)  # keep a reference: Windows calls it
         self.restarts = 0
@@ -104,7 +104,11 @@ class HookWatchdog:
 
     def hook_saw_event(self) -> None:
         """Called from the hook for every key it sees."""
-        self._missed = 0
+        self.detector.hook_event()
+
+    def hook_restarted(self) -> None:
+        """The hook was just put in afresh, whoever did it: give it time before judging it."""
+        self.detector.restarted()
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="switcher-hook-watchdog", daemon=True).start()
@@ -143,21 +147,20 @@ class HookWatchdog:
 
     def _window_proc(self, hwnd, msg, wparam, lparam):
         if msg == WM_INPUT:
-            self._missed += 1
-            if self._missed >= self.MISSING:
-                self._missed = 0
+            if self.detector.raw_event():
                 self.restarts += 1
                 log.warning("keys arrive but the keyboard hook sees none (Windows removed it?): reinstalling")
-                threading.Thread(target=self._restart, name="switcher-hook-restart", daemon=True).start()
+                threading.Thread(target=self._restart, args=(True,), name="switcher-hook-restart",
+                                 daemon=True).start()
         elif (msg == WM_POWERBROADCAST and wparam in PBT_RESUMED) or (msg == WM_WTSSESSION_CHANGE
                                                                        and wparam in WTS_BACK):
             now = time.monotonic()
             if now - self._last_wake > 5:  # a wake-up comes as two messages
                 self._last_wake = now
                 self.wakeups += 1
-                self._missed = 0
                 log.info("woke up or unlocked: reinstalling the keyboard hook")
-                threading.Thread(target=self._restart, name="switcher-hook-restart", daemon=True).start()
+                threading.Thread(target=self._restart, args=(False,), name="switcher-hook-restart",
+                                 daemon=True).start()
         elif msg == WM_CLOSE:
             user32.DestroyWindow(hwnd)
             return 0
