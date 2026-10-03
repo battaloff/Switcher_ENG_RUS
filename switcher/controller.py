@@ -345,6 +345,10 @@ class Controller:
         start, whole = found
         if not delim and any(s != start and s.startswith(start) for s in self.config.snippets):
             return False
+        if self.config.snippets_only_in_save_dialogs and not self._in_save_dialog():
+            if not delim:
+                log.info("snippet %r not completed in %s: not a save or export dialog", start, self.app or "?")
+            return False
         typed = cur.typed_text
         if not delim and start == typed and whole.startswith(typed):
             self._rewrite(0, whole[len(typed):])  # just go on typing: nothing on screen changes
@@ -357,6 +361,14 @@ class Controller:
         log.info("snippet %r → %r in %s", typed, whole, self.app or "?")
         self.learner.profile.log_event("snippet", app=self.app, typed_text=typed, final_text=whole)
         return True
+
+    def _in_save_dialog(self) -> bool:
+        check = getattr(self.backend, "in_save_dialog", None)
+        try:
+            return bool(check and check())
+        except Exception:
+            log.exception("could not tell whether a save dialog is in front")
+            return False
 
     def _maybe_switch_early(self) -> None:
         """Punto-style: switch as soon as the first letters show the layout is wrong.

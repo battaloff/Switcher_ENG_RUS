@@ -336,6 +336,12 @@ class WindowsBackend(BaseBackend):
         except Exception:
             log.exception("could not watch for save dialogs")
 
+    def in_save_dialog(self) -> bool:
+        from .win_events import has_file_browser, looks_like_save
+
+        hwnd = user32.GetForegroundWindow()
+        return bool(hwnd) and looks_like_save(hwnd) and has_file_browser(hwnd)
+
     def _save_dialog_opened(self, hwnd: int, again: bool = True) -> None:
         from ..controller import KeyEvent
 

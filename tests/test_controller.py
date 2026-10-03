@@ -751,7 +751,21 @@ def test_a_new_hook_forgets_held_keys(make_screen):
 def snippet_config(**snippets):
     config = Config()
     config.snippets = {"015": "015-510-400_4_", "525": "525-459_4_", "745": "745-605_4_", **snippets}
+    config.snippets_only_in_save_dialogs = False  # how snippets work; where they work is tested below
     return config
+
+
+def test_by_default_snippets_complete_only_file_names(make_screen):
+    config = snippet_config()
+    config.snippets_only_in_save_dialogs = Config().snippets_only_in_save_dialogs
+    s = make_screen(config, layout=EN, app="CorelDRW")
+    s.keys("745 ")  # a size typed in CorelDRAW
+    assert s.text == "745 "
+    s.save_dialog = True  # File → Export: the file name
+    s.click()
+    s.text = ""
+    s.keys("745")
+    assert s.text == "745-605_4_"
 
 
 def test_a_snippet_is_completed_as_soon_as_its_start_is_typed(make_screen):

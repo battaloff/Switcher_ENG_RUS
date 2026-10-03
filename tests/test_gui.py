@@ -396,5 +396,8 @@ def test_autohotkey_scripts_page_and_editor(profile, keyboard, monkeypatch, tmp_
 
 
 def test_snippets_can_be_switched_off_in_the_settings(window):
+    assert window.var_snippets_save.get() is True  # file names only, unless the user says otherwise
     window.var_snippets.set(False)
-    assert window.collect().snippets_enabled is False
+    window.var_snippets_save.set(False)
+    new = window.collect()
+    assert new.snippets_enabled is False and new.snippets_only_in_save_dialogs is False

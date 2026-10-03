@@ -492,6 +492,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.var_uzbek = tk.BooleanVar(value=c.writes_uzbek)
         self.var_save_en = tk.BooleanVar(value=c.english_in_save_dialogs)
         self.var_snippets = tk.BooleanVar(value=c.snippets_enabled)
+        self.var_snippets_save = tk.BooleanVar(value=c.snippets_only_in_save_dialogs)
         self.var_early = tk.BooleanVar(value=c.early_switch)
         self.var_autocorrect = tk.BooleanVar(value=c.autocorrect)
 
@@ -512,6 +513,9 @@ class SettingsWindow(ctk.CTkToplevel):
                          "«ПРивет» → «Привет»: Shift отпущен на букву позже. Двойной Shift вернёт как было")
         self._switch_row(card, self.var_snippets, "Дописывать по шаблонам",
                          "«015» → «015-510-400_4_». Шаблоны — на странице «Дописывание»")
+        self._switch_row(card, self.var_snippets_save, "Дописывать только имена файлов",
+                         "Только в окнах «Сохранить как» и «Экспорт». В остальных местах — например, размер "
+                         "в CorelDRAW — «745» останется «745»")
         self._switch_row(card, self.var_save_en, "Английская раскладка при сохранении файла",
                          "Когда открывается окно «Сохранить как», раскладка переключится на английскую")
         self._switch_row(card, self.var_uzbek, "Я пишу и по-узбекски",
@@ -648,8 +652,9 @@ class SettingsWindow(ctk.CTkToplevel):
 
     def _snippets_tab(self):
         page = self._page("Дописывание", "Начните печатать — Switcher допишет остальное: «015» сразу станет "
-                                         "«015-510-400_4_». Срабатывает в начале слова; двойной Shift сразу после "
-                                         "вернёт то, что вы набрали.", scroll=False)
+                                         "«015-510-400_4_». Срабатывает в начале слова и только в окнах "
+                                         "«Сохранить как» и «Экспорт» (меняется в «Основном»); двойной Shift "
+                                         "сразу после вернёт то, что вы набрали.", scroll=False)
         buttons = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
         buttons.pack(side="bottom", fill="x", pady=(12, 0))
         self._button(buttons, "Добавить…", self.add_snippet).pack(side="left")
@@ -1234,6 +1239,7 @@ class SettingsWindow(ctk.CTkToplevel):
         new.writes_uzbek = self.var_uzbek.get()
         new.english_in_save_dialogs = self.var_save_en.get()
         new.snippets_enabled = self.var_snippets.get()
+        new.snippets_only_in_save_dialogs = self.var_snippets_save.get()
         new.early_switch = self.var_early.get()
         new.autocorrect = self.var_autocorrect.get()
         new.threshold = round(float(self.var_threshold.get()), 1)

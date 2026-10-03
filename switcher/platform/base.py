@@ -177,6 +177,10 @@ class BaseBackend:
         with self._lock:
             return time.monotonic() < self._busy_until
 
+    def in_save_dialog(self) -> bool:
+        """Whether the window in front is a "Save As" / "Export" file dialog (where snippets go)."""
+        return False
+
     def _held_mods(self) -> frozenset[str] | None:
         """The modifiers the OS says are held right now; None where it cannot tell."""
         return None

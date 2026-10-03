@@ -56,6 +56,8 @@ class Config:
     # what the user starts typing → what Switcher completes it to: {"015": "015-510-400_4_"}
     snippets: dict[str, str] = field(default_factory=dict)
     snippets_enabled: bool = True      # off: the snippets stay in the list, nothing is completed
+    # only in "Save As" / "Export" file dialogs: "745" typed as a size in CorelDRAW stays "745"
+    snippets_only_in_save_dialogs: bool = True
     # AutoHotkey scripts in the manager: path → start it together with Switcher
     ahk_scripts: dict[str, bool] = field(default_factory=dict)
     early_switch: bool = True          # like Punto: switch after the first 3-4 letters, not at the end

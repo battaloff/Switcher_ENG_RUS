@@ -51,6 +51,7 @@ class FakeScreen:
         self.clock = 100.0
         self.held: set[str] = set()  # modifiers held as the OS sees them
         self.os_knows_mods = True  # like Windows; False: like an OS that cannot tell
+        self.save_dialog = False  # a "Save As" / "Export" dialog is in front
         self.controller: Controller | None = None
 
     # -- Backend API -------------------------------------------------------
@@ -81,6 +82,9 @@ class FakeScreen:
 
     def notify(self, message):
         self.notes.append(message)
+
+    def in_save_dialog(self):
+        return self.save_dialog
 
     # -- the user ------------------------------------------------------------
     def _event(self, kind, key, **kw):

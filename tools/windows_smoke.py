@@ -223,10 +223,16 @@ def main() -> int:
         print(f"   Notepad in front: {ok} (foreground {class_name(fg) if fg else None!r})")
         time.sleep(0.5)
 
-    # a snippet: "015" is completed at once
+    # snippets: by default only file names are completed — "015" typed in the text stays "015"
     focus_notepad()
     clear()
     layout(EN)
+    type_keys("015 ")
+    check("no snippet outside save and export dialogs", "015 ")
+
+    # completing everywhere (the user's choice): "015" is completed at once
+    app.config.snippets_only_in_save_dialogs = False
+    clear()
     type_keys("015")
     check("a snippet is completed as it is typed", "015-510-400_4_")
 
@@ -239,6 +245,7 @@ def main() -> int:
         time.sleep(0.12)
     time.sleep(1.2)
     check("a snippet typed on the numeric keypad", "525-459_4_")
+    app.config.snippets_only_in_save_dialogs = True  # back to the default: Save As below completes the name
 
     # AutoHotkey: scripts run from Switcher's manager, and what they type is not Switcher's to fix
     if app.ahk.interpreters():
