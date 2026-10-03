@@ -17,6 +17,22 @@ from ..layouts import Keyboard
 
 log = logging.getLogger(__name__)
 
+# The numeric keypad (Windows virtual keys): (character, physical code it stands for).  pynput reports
+# no character for these keys, so "015" typed there was an unknown symbol that ended the word.
+NUMPAD = {**{0x60 + i: (str(i), str(i)) for i in range(10)},
+          0x6A: ("*", None), 0x6B: ("+", None), 0x6D: ("-", "-"), 0x6F: ("/", None)}
+NUMPAD_DECIMAL = 0x6E  # "." or "," depending on the layout
+
+
+def numpad_key(vk: int | None, layout: str | None) -> tuple[str, str | None] | None:
+    """(character, physical code or None) for a numeric keypad key."""
+    if vk in NUMPAD:
+        return NUMPAD[vk]
+    if vk == NUMPAD_DECIMAL:
+        return ("," if layout == "ru" else "."), None
+    return None
+
+
 _MODIFIER_NAMES = {
     "shift": "shift", "shift_l": "shift", "shift_r": "shift",
     "ctrl": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",

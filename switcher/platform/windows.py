@@ -10,7 +10,7 @@ import time
 from ctypes import wintypes
 
 from ..layouts import EN, RU, Stroke
-from .base import BaseBackend
+from .base import BaseBackend, numpad_key
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +167,9 @@ class WindowsBackend(BaseBackend):
         if isinstance(key, self._pk.Key):
             return super()._describe(key)
         vk = getattr(key, "vk", None)
+        numpad = numpad_key(vk, self.current_layout())
+        if numpad is not None:
+            return "char", numpad[0], numpad[1]
         code = self.VK_CODES.get(vk) if vk is not None else None
         lang = self.current_layout() if code else None
         if lang is None:

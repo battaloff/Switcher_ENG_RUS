@@ -122,7 +122,7 @@ def main() -> int:
 
     config = Config()
     config.ai.enabled = False
-    config.snippets = {"015": "015-510-400_4_"}
+    config.snippets = {"015": "015-510-400_4_", "525": "525-459_4_"}
     import logging
 
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="   log: %(name)s: %(message)s")
@@ -229,6 +229,16 @@ def main() -> int:
     layout(EN)
     type_keys("015")
     check("a snippet is completed as it is typed", "015-510-400_4_")
+
+    # the same on the numeric keypad, on the Russian layout
+    focus_notepad()
+    clear()
+    layout(RU)
+    for vk in (0x65, 0x62, 0x65):  # NumPad 5, 2, 5
+        tap(KeyCode.from_vk(vk))
+        time.sleep(0.12)
+    time.sleep(1.2)
+    check("a snippet typed on the numeric keypad", "525-459_4_")
 
     # "Save As" opens on the Russian layout: the file name is typed in English
     focus_notepad()

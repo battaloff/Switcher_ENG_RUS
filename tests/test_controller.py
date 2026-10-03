@@ -817,3 +817,16 @@ def test_a_proactive_new_hook_does_not_forget_the_word(make_screen):
     s._event("press", "hook-reinstalled")  # back after a break: nothing was missed
     s.keys("5")
     assert s.text == "525-459_4_"
+
+
+def test_a_snippet_typed_on_the_numeric_keypad(make_screen):
+    from switcher.platform.base import numpad_key
+
+    s = make_screen(snippet_config(), layout=RU)
+    for vk in (0x60, 0x61, 0x65):  # NumPad 0, 1, 5: what Windows reports for them
+        char, code = numpad_key(vk, s.layout)
+        s.text += char
+        s._event("press", "char", char=char, code=code)
+    assert s.text == "015-510-400_4_"
+    assert numpad_key(0x6E, "ru") == (",", None) and numpad_key(0x6E, "en") == (".", None)
+    assert numpad_key(0x41, "en") is None
