@@ -64,6 +64,9 @@ class App:
         self.started_at = time.time()
         self._feedback = 0
         self._reviewing = threading.Lock()
+        from .ahk import AhkManager
+
+        self.ahk = AhkManager(config, notify=self.backend.notify)  # the user's AutoHotkey scripts
         self.releases: list | None = None  # the last list of versions fetched from GitHub
         self.release_listeners: list = []  # tray and settings window: called with the new list
 
@@ -183,6 +186,14 @@ class App:
         elevated = getattr(b, "elevated_apps", [])
         if elevated:
             lines.append("Запущены от имени администратора (Windows не пускает туда Switcher): " + ", ".join(elevated))
+        ahk = getattr(self, "ahk", None)
+        if ahk is not None and ahk.supported:
+            try:
+                running = ahk.running(fresh=True)
+                lines.append(f"AutoHotkey: скриптов в списке {len(ahk.configured())}, запущено {len(running)}"
+                             + "".join(f"\n  {path}" for path in running))
+            except Exception as exc:
+                lines.append(f"AutoHotkey: ошибка {exc}")
         offset = self.profile.threshold_offset(app_name) if app_name and app_name != "?" else 0.0
         if offset > 0.5:
             lines.append(f"В «{app_name}» Switcher стал осторожнее (+{offset:.1f}) после ваших отмен")
@@ -258,7 +269,19 @@ class App:
         self.backend.start(self.submit)
         worker = self._start_worker()
         threading.Thread(target=self._watch_health, name="switcher-health", daemon=True).start()
+        if self.ahk.supported:
+            threading.Thread(target=self._run_ahk, name="switcher-ahk", daemon=True).start()
         return worker
+
+    def _run_ahk(self) -> None:
+        """Start the AutoHotkey scripts marked to start with Switcher, then keep an eye on all of them."""
+        if self.stop_event.wait(3.0):  # scripts Windows starts at sign-in may be on their way
+            return
+        try:
+            self.ahk.start_with_switcher()
+            self.ahk.watch(self.stop_event)
+        except Exception:
+            log.exception("AutoHotkey manager failed")
 
     def shutdown(self, worker: threading.Thread) -> None:
         self.stop_event.set()

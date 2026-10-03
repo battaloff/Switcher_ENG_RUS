@@ -147,3 +147,20 @@ def test_uzbek_writers_get_their_words_kept():
     assert "Uzbek" not in captured[0]["body"]["system"]
     assistant.fix_phrase(PIECES, uzbek=True)
     assert "Uzbek words stay exactly as typed" in captured[1]["body"]["system"]
+
+
+def test_claude_writes_an_autohotkey_script():
+    captured = []
+    new = '#Requires AutoHotkey v2.0\r\n^!d::SendText FormatTime(, "dd.MM.yyyy")\r\n'
+    assistant = Assistant(AI(), client=fake_client({"script": new, "summary": "Ctrl+Alt+D вставляет дату."},
+                                                   captured))
+    script, summary = assistant.write_ahk("Ctrl+Alt+D — дата", "::btw::by the way\n", major=2)
+    assert script == '#Requires AutoHotkey v2.0\n^!d::SendText FormatTime(, "dd.MM.yyyy")\n'
+    assert summary == "Ctrl+Alt+D вставляет дату."
+    body = captured[0]["body"]
+    assert "AutoHotkey v2" in body["system"] and "#Requires AutoHotkey v2.0" in body["system"]
+    sent = json.loads(body["messages"][0]["content"])
+    assert sent == {"request": "Ctrl+Alt+D — дата", "autohotkey_version": "v2", "script": "::btw::by the way\n"}
+    assistant = Assistant(AI(), client=fake_client({"script": " ", "summary": "?"}, []))
+    with pytest.raises(AIError):
+        assistant.write_ahk("что-нибудь", "", major=1)

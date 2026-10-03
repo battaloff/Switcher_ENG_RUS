@@ -182,7 +182,7 @@ def selftest(report: str | None = None) -> int:
         ui = Ui(state["app"])
         ui.open_settings(welcome=True)
         ui.root.update()
-        for tab in ("main", "keys", "ai", "rules", "stats", "updates"):
+        for tab in ("main", "keys", "snippets", "ahk", "ai", "rules", "stats", "updates"):
             ui.window.show(tab)
             ui.root.update()
         ui.root.destroy()
@@ -194,7 +194,16 @@ def selftest(report: str | None = None) -> int:
     step("Claude SDK", claude)
     step("значок в трее", tray)
     step("обновления", updates)
+
+    def autohotkey():
+        from . import ahk_editor  # noqa: F401  (bundled: imported only when a script is opened)
+
+        manager = state["app"].ahk
+        assert manager.supported, "no AutoHotkey support in this build"
+        return f"{manager.describe_install()}; запущено скриптов: {len(manager.running(fresh=True))}"
+
     if "app" in state:
+        step("AutoHotkey", autohotkey)
         step("окно настроек", gui)
     text = "\n".join(lines) + f"\n{'SELFTEST OK' if ok else 'SELFTEST FAILED'}\n"
     path = report or os.path.join(tempfile.gettempdir(), "switcher-selftest.log")

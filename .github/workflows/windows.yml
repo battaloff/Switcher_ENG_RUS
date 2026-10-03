@@ -112,6 +112,10 @@ jobs:
           $languages = Get-WinUserLanguageList
           $languages.Add("ru-RU")
           Set-WinUserLanguageList $languages -Force
+          # AutoHotkey, for the scripts manager and for keys typed by a script
+          choco install autohotkey --no-progress -y
+          if ($LASTEXITCODE -in 0, 3010) { $env:SWITCHER_EXPECT_AHK = "1" }
+          else { Write-Host "::warning::AutoHotkey could not be installed: its checks are skipped" }
           python tools/windows_smoke.py
 
       - name: Publish release

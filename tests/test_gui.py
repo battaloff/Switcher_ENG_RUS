@@ -1,4 +1,5 @@
 import threading
+import time
 
 import pytest
 
@@ -279,3 +280,121 @@ def test_snippets_take_effect_at_once(window, monkeypatch):
     window.remove_snippets()
     assert window.app.saved[-1].snippets == {} and window.snippet_tree.get_children() == ()
     assert window.collect().snippets == {}
+
+
+class FakeAhkSystem:
+    supported = True
+
+    def __init__(self):
+        self.windows = {}
+
+    def running(self):
+        return dict(self.windows)
+
+    def command(self, window, command):
+        from switcher import ahk
+
+        if command == ahk.ID_EXIT:
+            self.windows = {p: w for p, w in self.windows.items() if w != window}
+        return True
+
+    def launch(self, path):
+        self.windows[path] = 42
+
+    def edit_elsewhere(self, path):
+        pass
+
+    def install_roots(self):
+        return []
+
+    def major_of(self, path):
+        return None
+
+    def run(self, args, timeout):
+        return 0, ""
+
+    def startup_scripts(self):
+        return []
+
+
+def test_autohotkey_scripts_page_and_editor(profile, keyboard, monkeypatch, tmp_path):
+    from switcher import ahk, ahk_editor
+
+    monkeypatch.setattr(autostart, "is_enabled", lambda: False)
+    app = FakeApp(profile, keyboard)
+    system = FakeAhkSystem()
+    running = tmp_path / "running.ahk"
+    running.write_text("#Requires AutoHotkey v2.0\n::btw::by the way\n", encoding="utf-8")
+    system.windows = {str(running): 7}
+    app.ahk = ahk.AhkManager(app.config, system=system)
+    ui = gui.Ui(app, root=ROOT)
+    ui.open_settings(tab="ahk")
+    window = ui.window
+    ROOT.update()
+    try:
+        # the first visit picks up the script already running
+        assert app.saved[-1].ahk_scripts == {str(running): False}
+        rows = [window.ahk_tree.item(iid, "values") for iid in window.ahk_tree.get_children()]
+        assert rows == [("running", "работает", "—", str(tmp_path))]
+        window.ahk_tree.selection_set(window.ahk_tree.get_children()[0])
+        window.toggle_script_autostart()
+        assert app.saved[-1].ahk_scripts == {str(running): True}
+        window.toggle_scripts()
+        assert not system.windows
+        assert window.ahk_tree.item(window.ahk_tree.get_children()[0], "values")[1] == "остановлен"
+
+        monkeypatch.setattr(window, "scripts_folder", lambda: tmp_path / "scripts")
+        monkeypatch.setattr(window, "_ask", lambda title, text: "Мои клавиши")
+        window.create_script()
+        created = tmp_path / "scripts" / "Мои клавиши.ahk"
+        assert created.exists() and app.saved[-1].ahk_scripts[str(created)] is True
+        editor = ui.editors[-1]
+        ROOT.update()
+        assert "#Requires AutoHotkey v2.0" in editor.content()
+        assert {"directive", "hotkey", "comment"} <= {tag for tag, _, _ in ahk_editor.spans(editor.content(), 2)}
+
+        editor.text.insert("end", "::мб::может быть\n")
+        assert editor.dirty
+        editor.save()
+        assert "::мб::может быть" in created.read_text(encoding="utf-8-sig") and not editor.dirty
+        editor.show_error(2, "Строка 2: ошибка")
+        assert editor.text.tag_ranges("error")
+
+        class Claude:
+            def write_ahk(self, request, script, major):
+                return script + "^!t::SendText \"тест\"\n", "Добавил Ctrl+Alt+T — слово «тест»."
+
+        class Dialog:
+            def __init__(self, **kw):
+                pass
+
+            def get_input(self):
+                return "Ctrl+Alt+T — напечатать «тест»"
+
+        app.assistant, app.ai_ready = Claude(), lambda: True
+        monkeypatch.setattr(ahk_editor.ctk, "CTkInputDialog", Dialog)
+        monkeypatch.setattr(ahk_editor, "_set_icon", lambda window: None)
+        editor.ask_claude()
+        for _ in range(200):
+            ROOT.update()
+            if "^!t::" in editor.content():
+                break
+            time.sleep(0.01)
+        assert '^!t::SendText "тест"' in editor.content() and editor.dirty  # shown, not saved behind the back
+        assert "Ctrl+Alt+T" in editor.status.cget("text")
+        editor.text.edit_undo()
+        assert "^!t::" not in editor.content()
+        assert ui.open_script(str(created)) is editor  # one editor per script
+        editor.text_value = editor.content()  # nothing unsaved: closes without asking
+        editor.close()
+    finally:
+        for editor in ui.editors:
+            if editor.winfo_exists():
+                editor.destroy()
+        window.destroy()
+        ROOT.update()
+
+
+def test_snippets_can_be_switched_off_in_the_settings(window):
+    window.var_snippets.set(False)
+    assert window.collect().snippets_enabled is False

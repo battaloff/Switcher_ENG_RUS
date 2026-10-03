@@ -162,6 +162,10 @@ class Controller:
             return
         if ev.key == "hook-reinstalled":
             return  # a precaution after a break: the word being typed is still right
+        if ev.key == "foreign-input":
+            # another program typed (an AutoHotkey hotstring or hotkey): the screen is not what was tracked
+            self.reset("foreign-input")
+            return
         if ev.key == "save-dialog":
             # "Save As" opened: file names are mostly typed in English
             if self.enabled and self.config.english_in_save_dialogs and self.layout != EN:
@@ -332,8 +336,8 @@ class Controller:
         end of the word (``delim``).
         """
         cur = self.cur
-        if (not self.config.snippets or cur is None or not self.enabled or cur.reopened_from is not None
-                or self._excluded()):
+        if (not self.config.snippets or not self.config.snippets_enabled or cur is None or not self.enabled
+                or cur.reopened_from is not None or self._excluded()):
             return False
         found = self._snippet_for(cur)
         if found is None:

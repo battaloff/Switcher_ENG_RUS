@@ -74,6 +74,12 @@ VK_BACK, VK_TAB, VK_RETURN = 0x08, 0x09, 0x0D
 # Tag in dwExtraInfo of every key we send.  The hook drops exactly these, so keys
 # the user (or an automated check) types while we are typing are never lost.
 OWN_INPUT = 0x53574348  # "SWCH"
+# AutoHotkey tags the keys it sends too (KEY_IGNORE and its SendLevel variants): its hotstrings and
+# hotkeys typing text, not the user.  Such keys are not the user's word, and they must not count
+# towards trusting injected input (TRUST_INJECTED_AFTER) either.
+AHK_INPUT = range(0xFFC3D44F - 2 - 100, 0xFFC3D44F + 1)
+WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
+_MODIFIER_VK_CODES = {0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
 _PRIMARY_LANG = {0x09: EN, 0x19: RU}
 # Windows' own tools that always run as administrator: nobody types text there, so no warning
 _SYSTEM_TOOLS = {"taskmgr", "mmc", "regedit", "consent", "logonui", "useraccountcontrolsettings"}
@@ -134,6 +140,7 @@ class WindowsBackend(BaseBackend):
         self._watchdog = None
         self._watchdog_retry_at = 0.0
         self._away = False
+        self._foreign = False  # the last key went by was typed by AutoHotkey
         self._save_dialogs = None
         try:
             self._self_elevated = process_elevated()
@@ -283,11 +290,36 @@ class WindowsBackend(BaseBackend):
         return {"win32_event_filter": self._hook_filter}
 
     def _hook_filter(self, msg, data) -> bool:
-        """Runs in the hook for every key: tells the watchdog the hook is alive, drops our own keys."""
+        """Runs in the hook for every key: tells the watchdog the hook is alive, drops our own keys.
+
+        Keys typed by AutoHotkey are dropped too, and the word being tracked is forgotten when it
+        starts typing: the text on screen is no longer what Switcher saw being typed.
+        """
         watchdog = self._watchdog
         if watchdog is not None:
             watchdog.hook_saw_event()
-        return (data.dwExtraInfo or 0) != OWN_INPUT
+        extra = data.dwExtraInfo or 0
+        if extra == OWN_INPUT:
+            return False
+        down = msg in (WM_KEYDOWN, WM_SYSKEYDOWN)
+        if (extra & 0xFFFFFFFF) in AHK_INPUT:
+            if down and data.vkCode not in _MODIFIER_VK_CODES and not self._foreign:
+                self._foreign = True
+                self._foreign_input()
+            return False
+        if down:
+            self._foreign = False
+        return True
+
+    def _foreign_input(self) -> None:
+        from ..controller import KeyEvent
+
+        sink = self._sink
+        if sink:
+            try:
+                sink(KeyEvent("press", "foreign-input", app=self.active_app(), time=time.monotonic()))
+            except Exception:
+                log.exception("could not pass on foreign input")
 
     def start(self, sink) -> None:
         super().start(sink)

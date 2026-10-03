@@ -240,6 +240,51 @@ def main() -> int:
     time.sleep(1.2)
     check("a snippet typed on the numeric keypad", "525-459_4_")
 
+    # AutoHotkey: scripts run from Switcher's manager, and what they type is not Switcher's to fix
+    if app.ahk.interpreters():
+        print("   AutoHotkey:", app.ahk.describe_install())
+        script = Path(os.environ["SWITCHER_HOME"]) / "smoke.ahk"
+        script.write_text("#Requires AutoHotkey v2.0\n#SingleInstance Force\n::zzq::готово\n", encoding="utf-8-sig")
+        broken = Path(os.environ["SWITCHER_HOME"]) / "broken.ahk"
+        broken.write_text("#Requires AutoHotkey v2.0\nx := 1\nif (x {\n", encoding="utf-8-sig")
+        good, bad = app.ahk.check(str(script)), app.ahk.check(str(broken))
+        checked = good[0] is True and bad[0] is False
+        print(f"{'OK  ' if checked else 'FAIL'} AutoHotkey syntax check: {good} / {bad}")
+        results.append(checked)
+        error = app.ahk.start(str(script))
+        deadline = time.time() + 10
+        while not app.ahk.is_running(str(script)) and time.time() < deadline:
+            time.sleep(0.3)
+        started = error is None and app.ahk.is_running(str(script))
+        print(f"{'OK  ' if started else 'FAIL'} a script started from Switcher runs: {error}; "
+              f"running {app.ahk.running(fresh=True)}")
+        results.append(started)
+        time.sleep(1)
+        focus_notepad()
+        clear()
+        layout(EN)
+        type_keys("zzq ")
+        check("an AutoHotkey hotstring types its text", "готово ")
+        type_keys("ghbdtn ")
+        check("Switcher goes on right after AutoHotkey typed", "готово привет ")
+        print(f"   tracked after AutoHotkey: dropped {app.backend.injected_dropped}, "
+              f"accept injected {app.backend.accept_injected}")
+        reloaded = app.ahk.reload(str(script)) is None
+        time.sleep(2)
+        reloaded = reloaded and app.ahk.is_running(str(script))
+        stopped = app.ahk.stop(str(script)) is None
+        deadline = time.time() + 10
+        while app.ahk.is_running(str(script)) and time.time() < deadline:
+            time.sleep(0.3)
+        stopped = stopped and not app.ahk.is_running(str(script))
+        print(f"{'OK  ' if reloaded and stopped else 'FAIL'} reload and stop from Switcher: {reloaded}, {stopped}")
+        results.append(reloaded and stopped)
+    elif os.environ.get("SWITCHER_EXPECT_AHK") == "1":
+        print("FAIL AutoHotkey was installed but Switcher did not find it")
+        results.append(False)
+    else:
+        print("SKIP AutoHotkey is not installed")
+
     # "Save As" opens on the Russian layout: the file name is typed in English
     focus_notepad()
     clear()

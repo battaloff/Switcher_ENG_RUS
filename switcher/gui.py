@@ -14,11 +14,12 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
-from tkinter import messagebox, ttk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
-from . import __version__, autostart, updater
+from . import __version__, ahk, autostart, updater
 from .controller import parse_hotkey
 from .engine import split_core
 from .hotkeys import MODIFIER_KEYSYMS, build_spec as build_hotkey, format_hotkey, key_name as hotkey_key_name
@@ -58,6 +59,7 @@ class Ui:
         install_clipboard_support(self.root)
         self._calls: queue.Queue = queue.Queue()
         self.window: SettingsWindow | None = None
+        self.editors: list = []
 
     def call(self, fn) -> None:
         """Run ``fn`` on the Tk thread (safe from any thread)."""
@@ -91,6 +93,24 @@ class Ui:
             return
         self.window = SettingsWindow(self, welcome=welcome)
         self.window.show(tab or ("ai" if welcome else None))
+
+    def open_script(self, path: str, on_saved=None):
+        """The AutoHotkey editor; it outlives the settings window."""
+        from .ahk_editor import open_editor
+
+        for editor in self.editors:
+            if editor.winfo_exists() and ahk.norm(editor.path) == ahk.norm(path):
+                editor.deiconify()
+                editor.lift()
+                editor.focus_force()
+                return editor
+        try:
+            editor = open_editor(self.root, self.app, path, on_saved)
+        except OSError as exc:
+            messagebox.showerror("Switcher", f"Не удалось открыть {path}: {exc}")
+            return None
+        self.editors = [e for e in self.editors if e.winfo_exists()] + [editor]
+        return editor
 
 
 # Physical keys of Ctrl+V/C/X/A.  Tk binds these shortcuts to the Latin letters,
@@ -252,8 +272,8 @@ def _logo_image():
 
 
 class SettingsWindow(ctk.CTkToplevel):
-    PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"), ("ai", "Claude (ИИ)"),
-             ("rules", "Правила"), ("stats", "Что я о вас знаю"), ("updates", "Обновления"))
+    PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"), ("ahk", "AutoHotkey"),
+             ("ai", "Claude (ИИ)"), ("rules", "Правила"), ("stats", "Что я о вас знаю"), ("updates", "Обновления"))
 
     def __init__(self, ui: Ui, welcome: bool = False):
         apply_theme()
@@ -287,12 +307,16 @@ class SettingsWindow(ctk.CTkToplevel):
         listeners = getattr(self.app, "release_listeners", None)
         if listeners is not None:
             listeners.append(self._releases_arrived)
+        if self.ahk is not None:
+            self.ahk.listeners.append(self._ahk_changed)
 
     def destroy(self) -> None:
         ctk.AppearanceModeTracker.remove(self._restyle)
         listeners = getattr(self.app, "release_listeners", None)
         if listeners is not None and self._releases_arrived in listeners:
             listeners.remove(self._releases_arrived)
+        if self.ahk is not None and self._ahk_changed in self.ahk.listeners:
+            self.ahk.listeners.remove(self._ahk_changed)
         super().destroy()
 
     # -- layout --------------------------------------------------------------
@@ -312,6 +336,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "main": self._main_tab(),
             "keys": self._keys_tab(),
             "snippets": self._snippets_tab(),
+            "ahk": self._ahk_tab(),
             "ai": self._ai_tab(),
             "rules": self._rules_tab(),
             "stats": self._stats_tab(),
@@ -381,6 +406,8 @@ class SettingsWindow(ctk.CTkToplevel):
             button.configure(fg_color=SELECTED if active else "transparent")
         if tab == "stats":
             self.refresh_stats()
+        if tab == "ahk":
+            self.refresh_ahk()
         if tab == "updates" and not self._releases_shown:
             if getattr(self.app, "releases", None) is not None:
                 self.show_releases(self.app.releases)
@@ -464,6 +491,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.var_two_caps = tk.BooleanVar(value=c.fix_two_capitals)
         self.var_uzbek = tk.BooleanVar(value=c.writes_uzbek)
         self.var_save_en = tk.BooleanVar(value=c.english_in_save_dialogs)
+        self.var_snippets = tk.BooleanVar(value=c.snippets_enabled)
         self.var_early = tk.BooleanVar(value=c.early_switch)
         self.var_autocorrect = tk.BooleanVar(value=c.autocorrect)
 
@@ -482,6 +510,8 @@ class SettingsWindow(ctk.CTkToplevel):
                          "«пРИВЕТ» → «Привет», и Caps Lock выключится")
         self._switch_row(card, self.var_two_caps, "Исправлять ДВе ЗАглавные",
                          "«ПРивет» → «Привет»: Shift отпущен на букву позже. Двойной Shift вернёт как было")
+        self._switch_row(card, self.var_snippets, "Дописывать по шаблонам",
+                         "«015» → «015-510-400_4_». Шаблоны — на странице «Дописывание»")
         self._switch_row(card, self.var_save_en, "Английская раскладка при сохранении файла",
                          "Когда открывается окно «Сохранить как», раскладка переключится на английскую")
         self._switch_row(card, self.var_uzbek, "Я пишу и по-узбекски",
@@ -681,6 +711,176 @@ class SettingsWindow(ctk.CTkToplevel):
     def remove_snippets(self) -> None:
         keep = {k: v for k, v in self.config_copy.snippets.items() if k not in self.snippet_tree.selection()}
         self._save_snippets(keep)
+
+    # -- AutoHotkey ----------------------------------------------------------------
+
+    @property
+    def ahk(self):
+        return getattr(self.app, "ahk", None)
+
+    def _ahk_tab(self):
+        page = self._page("AutoHotkey", "Ваши скрипты AutoHotkey в одном месте: запуск, остановка, правка — здесь "
+                                        "и в меню значка Switcher. Двойной щелчок по скрипту открывает редактор.",
+                          scroll=False)
+        manager = self.ahk
+        info = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        info.pack(fill="x", pady=(8, 0))
+        self.ahk_install = ctk.CTkLabel(info, text="", font=self.fonts["small"], text_color=MUTED, anchor="w",
+                                        justify="left", wraplength=520)
+        self.ahk_install.pack(side="left", fill="x", expand=True)
+        self.ahk_download = self._button(info, "Скачать AutoHotkey", lambda: webbrowser.open(ahk.DOWNLOAD_URL),
+                                         height=28)
+        bottom = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        bottom.pack(side="bottom", fill="x", pady=(12, 0))
+        first = ctk.CTkFrame(bottom, fg_color="transparent", corner_radius=0)
+        first.pack(fill="x")
+        second = ctk.CTkFrame(bottom, fg_color="transparent", corner_radius=0)
+        second.pack(fill="x", pady=(8, 0))
+        self._button(first, "Добавить…", self.add_scripts).pack(side="left")
+        self._button(first, "Создать…", self.create_script).pack(side="left", padx=8)
+        self._button(first, "Изменить…", self.edit_script).pack(side="left")
+        self._button(first, "Убрать из списка", self.remove_scripts, danger=True).pack(side="right")
+        self._button(second, "Запустить / остановить", self.toggle_scripts).pack(side="left")
+        self._button(second, "Перезапустить", self.reload_scripts).pack(side="left", padx=8)
+        self._button(second, "Запускать со Switcher", self.toggle_script_autostart).pack(side="left")
+        self._button(second, "Папка", self.open_script_folder).pack(side="right")
+        card = self._card(page, expand=True)
+        columns = ("name", "state", "auto", "folder")
+        self.ahk_tree = ttk.Treeview(card, columns=columns, show="headings", style="Switcher.Treeview")
+        for col, title, width in (("name", "Скрипт", 170), ("state", "Сейчас", 100), ("auto", "Со Switcher", 100),
+                                  ("folder", "Папка", 260)):
+            self.ahk_tree.heading(col, text=title, anchor="w")
+            self.ahk_tree.column(col, width=width, minwidth=60, anchor="w", stretch=col == "folder")
+        scroll = ctk.CTkScrollbar(card, command=self.ahk_tree.yview)
+        self.ahk_tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y", padx=(0, 4), pady=8)
+        self.ahk_tree.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=10)
+        self.ahk_tree.bind("<Double-1>", lambda event: self.edit_script())
+        self._ahk_paths: dict[str, str] = {}
+        if manager is not None and manager.supported and not self.config_copy.ahk_scripts:
+            found = manager.discover()  # the first visit: pick up the scripts already in use
+            if found:
+                self._save_ahk({path: False for path in found})
+        self.refresh_ahk()
+        return page
+
+    def _ahk_changed(self) -> None:
+        self.ui.call(lambda: self.winfo_exists() and self.refresh_ahk())
+
+    def refresh_ahk(self) -> None:
+        manager = self.ahk
+        if manager is None:
+            self.ahk_install.configure(text="Менеджер скриптов недоступен.")
+            return
+        self.ahk_install.configure(text=manager.describe_install())
+        if manager.supported and not manager.interpreters():
+            self.ahk_download.pack(side="right")
+        else:
+            self.ahk_download.pack_forget()
+        running = {ahk.norm(p): p for p in manager.running(fresh=True)}
+        configured = self.config_copy.ahk_scripts
+        paths = {ahk.norm(p): p for p in configured}
+        for key, path in running.items():
+            paths.setdefault(key, path)
+        selected = {self._ahk_paths.get(iid) for iid in self.ahk_tree.selection()}
+        self.ahk_tree.delete(*self.ahk_tree.get_children())
+        self._ahk_paths = {}
+        for i, (key, path) in enumerate(sorted(paths.items(), key=lambda kv: ahk.name_of(kv[1]).lower())):
+            state = "работает" if key in running else ("нет файла" if not Path(path).exists() else "остановлен")
+            listed = next((v for p, v in configured.items() if ahk.norm(p) == key), None)
+            auto = "не в списке" if listed is None else ("запускать" if listed else "—")
+            iid = f"s{i}"
+            self._ahk_paths[iid] = path
+            self.ahk_tree.insert("", "end", iid=iid, values=(ahk.name_of(path), state, auto, str(Path(path).parent)))
+            if path in selected:
+                self.ahk_tree.selection_add(iid)
+
+    def _selected_scripts(self) -> list[str]:
+        return [self._ahk_paths[iid] for iid in self.ahk_tree.selection() if iid in self._ahk_paths]
+
+    def _save_ahk(self, scripts: dict[str, bool]) -> None:
+        """Like snippets, the list of scripts takes effect at once."""
+        self.config_copy.ahk_scripts = dict(scripts)
+        live = copy.deepcopy(self.app.config)
+        live.ahk_scripts = dict(scripts)
+        self.app.update_config(live)
+        self.refresh_ahk()
+
+    def _with_scripts(self, paths, autostart_on: bool) -> dict[str, bool]:
+        scripts = dict(self.config_copy.ahk_scripts)
+        known = {ahk.norm(p) for p in scripts}
+        in_startup = {ahk.norm(p) for p in self.ahk.system.startup_scripts()} if self.ahk else set()
+        for path in paths:
+            if ahk.norm(path) not in known:
+                scripts[path] = autostart_on and ahk.norm(path) not in in_startup  # Windows starts those itself
+        return scripts
+
+    def add_scripts(self) -> None:
+        paths = filedialog.askopenfilenames(parent=self, title="Скрипты AutoHotkey", filetypes=[
+            ("Скрипты AutoHotkey", "*.ahk *.ah2 *.ahk2"), ("Все файлы", "*.*")])
+        if paths:
+            self._save_ahk(self._with_scripts([str(Path(p)) for p in paths], autostart_on=True))
+
+    def scripts_folder(self) -> Path:
+        documents = Path.home() / "Documents"
+        return (documents if documents.is_dir() else data_dir()) / "AutoHotkey"
+
+    def create_script(self) -> None:
+        manager = self.ahk
+        if manager is None:
+            return
+        name = (self._ask("Новый скрипт", "Как назвать скрипт (например, Мои клавиши):") or "").strip()
+        if not name:
+            return
+        try:
+            path = manager.new_script(self.scripts_folder(), name, manager.preferred_major())
+        except OSError as exc:
+            messagebox.showerror("Switcher", f"Не удалось создать скрипт: {exc}", parent=self)
+            return
+        self._save_ahk(self._with_scripts([str(path)], autostart_on=True))
+        self.ui.open_script(str(path), on_saved=lambda p: self._ahk_changed())
+
+    def edit_script(self) -> None:
+        for path in self._selected_scripts()[:3]:
+            self.ui.open_script(path, on_saved=lambda p: self._ahk_changed())
+        if not self._selected_scripts():
+            self.flash("Выберите скрипт в списке")
+
+    def _report(self, errors: list[str]) -> None:
+        errors = [e for e in errors if e]
+        if errors:
+            messagebox.showwarning("Switcher", "\n".join(errors), parent=self)
+        self.refresh_ahk()
+
+    def toggle_scripts(self) -> None:
+        if self.ahk is not None:
+            self._report([self.ahk.toggle(path) for path in self._selected_scripts()])
+
+    def reload_scripts(self) -> None:
+        if self.ahk is not None:
+            self._report([self.ahk.reload(path) for path in self._selected_scripts()])
+
+    def toggle_script_autostart(self) -> None:
+        selected = self._selected_scripts()
+        if not selected:
+            self.flash("Выберите скрипт в списке")
+            return
+        scripts = self._with_scripts(selected, autostart_on=False)
+        keys = {ahk.norm(p) for p in selected}
+        turn_on = not all(v for p, v in scripts.items() if ahk.norm(p) in keys)
+        self._save_ahk({p: (turn_on if ahk.norm(p) in keys else v) for p, v in scripts.items()})
+
+    def remove_scripts(self) -> None:
+        keys = {ahk.norm(p) for p in self._selected_scripts()}
+        self._save_ahk({p: v for p, v in self.config_copy.ahk_scripts.items() if ahk.norm(p) not in keys})
+
+    def open_script_folder(self) -> None:
+        from .tray import open_folder
+
+        selected = self._selected_scripts()
+        folder = Path(selected[0]).parent if selected else self.scripts_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        open_folder(folder)
 
     def _stats_tab(self):
         page = self._page("Что я о вас знаю", "Всё, что Switcher выучил о вашей печати. Данные хранятся только "
@@ -1033,6 +1233,7 @@ class SettingsWindow(ctk.CTkToplevel):
         new.fix_two_capitals = self.var_two_caps.get()
         new.writes_uzbek = self.var_uzbek.get()
         new.english_in_save_dialogs = self.var_save_en.get()
+        new.snippets_enabled = self.var_snippets.get()
         new.early_switch = self.var_early.get()
         new.autocorrect = self.var_autocorrect.get()
         new.threshold = round(float(self.var_threshold.get()), 1)

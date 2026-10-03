@@ -9,6 +9,7 @@ import sys
 import threading
 from pathlib import Path
 
+from .ahk import name_of as ahk_name
 from .paths import log_path
 
 log = logging.getLogger(__name__)
@@ -115,6 +116,8 @@ class Tray:
 
         menu = pystray.Menu(
             pystray.MenuItem("Настройки…", lambda icon, item: ui.call(ui.open_settings), default=True),
+            pystray.MenuItem("AutoHotkey", pystray.Menu(lambda: self._ahk_items(pystray)),
+                             visible=getattr(app, "ahk", None) is not None and app.ahk.supported),
             pystray.MenuItem("Автопереключение", toggle, checked=lambda item: app.controller.enabled),
             pystray.MenuItem("Что Switcher знает обо мне…",
                              lambda icon, item: ui.call(lambda: ui.open_settings(tab="stats"))),
@@ -130,9 +133,49 @@ class Tray:
         self.icon = pystray.Icon("switcher", icon_image(), f"Switcher {__version__} — умный переключатель раскладки",
                                  menu)
         app.release_listeners.append(lambda releases: self.icon.update_menu())
+        if getattr(app, "ahk", None) is not None:
+            app.ahk.listeners.append(self._refresh_menu)
         app.backend.notifier = lambda message: self.icon.notify(message, "Switcher")
         threading.Thread(target=self.icon.run, name="switcher-tray", daemon=True).start()
         return True
+
+    def _refresh_menu(self) -> None:
+        if self.icon is not None:
+            try:
+                self.icon.update_menu()
+            except Exception:
+                log.debug("tray menu update failed", exc_info=True)
+
+    def _ahk_items(self, pystray):
+        """The AutoHotkey submenu: a tick on every running script; a click starts or stops it."""
+        app, ui = self.app, self.ui
+        manager = app.ahk
+
+        def act(job):
+            def run():
+                errors = [e for e in job() if e]
+                if errors:
+                    app.backend.notify("\n".join(errors))
+                self._refresh_menu()
+            threading.Thread(target=run, name="switcher-ahk-menu", daemon=True).start()
+
+        def toggle(path):
+            return lambda icon, item: act(lambda: [manager.toggle(path)])
+
+        def running(path):
+            return lambda item: manager.is_running(path)
+
+        scripts = manager.listed()
+        for path in scripts[:30]:
+            yield pystray.MenuItem(ahk_name(path), toggle(path), checked=running(path))
+        if not scripts:
+            yield pystray.MenuItem("Скриптов пока нет", None, enabled=False)
+        yield pystray.Menu.SEPARATOR
+        yield pystray.MenuItem("Перезапустить запущенные", lambda icon, item: act(manager.reload_running),
+                               enabled=bool(manager.running()))
+        yield pystray.MenuItem("Остановить все", lambda icon, item: act(manager.stop_all),
+                               enabled=bool(manager.running()))
+        yield pystray.MenuItem("Скрипты и редактор…", lambda icon, item: ui.call(lambda: ui.open_settings(tab="ahk")))
 
     def stop(self) -> None:
         if self.icon is not None:

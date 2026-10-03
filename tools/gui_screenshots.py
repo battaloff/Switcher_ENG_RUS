@@ -16,14 +16,29 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGES = ["main", "keys", "snippets", "ai", "rules", "stats", "updates"]
+PAGES = ["main", "keys", "snippets", "ahk", "ai", "rules", "stats", "updates", "editor"]
+SAMPLE_SCRIPT = """#Requires AutoHotkey v2.0
+#SingleInstance Force
+
+; Ctrl+Alt+D — сегодняшняя дата
+^!d::SendText FormatTime(, "dd.MM.yyyy")
+
+; Win+N — Блокнот
+#n::Run "notepad.exe"
+
+::@@::me@example.com   ; адрес по "@@"
+::мб::может быть
+
+/* Caps Lock — переключить раскладку */
+CapsLock::Send "{Alt down}{Shift}{Alt up}"
+"""
 
 
 def shoot(mode: str, out: Path) -> None:
     import customtkinter as ctk
     from PIL import ImageGrab
 
-    from switcher import autostart, gui, updater
+    from switcher import ahk, autostart, gui, updater
     from switcher.config import Config
     from switcher.layouts import DEFAULT_KEYBOARD
     from switcher.profile import Profile
@@ -56,6 +71,25 @@ def shoot(mode: str, out: Path) -> None:
         def ai_ready(self):
             return False
 
+    folder = Path(tempfile.mkdtemp()) / "AutoHotkey"
+    folder.mkdir()
+    scripts = {}
+    for name, auto in (("Мои клавиши", True), ("Буфер обмена", False), ("Игры", False)):
+        (folder / f"{name}.ahk").write_text(SAMPLE_SCRIPT, encoding="utf-8-sig")
+        scripts[str(folder / f"{name}.ahk")] = auto
+    App.config.ahk_scripts = scripts
+
+    class Scripts(ahk.System):  # two of them running; AutoHotkey v2 "installed"
+        supported = True
+
+        def running(self):
+            return {path: 1 for path in list(scripts)[:2]}
+
+        def install_roots(self):
+            return [r"C:\Program Files\AutoHotkey"]
+
+    App.ahk = ahk.AhkManager(App.config, system=Scripts())
+    App.ahk._interpreters = [ahk.Interpreter(r"C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe", 2)]
     App.profile.add_rule("layout", "ghbdtn", "ru", source="learned")
     App.profile.add_rule("layout", "kubernetes", "en", source="user")
     App.profile.add_rule("replace", "превет", "привет", source="ai")
@@ -66,14 +100,24 @@ def shoot(mode: str, out: Path) -> None:
     window = ui.window
     window.geometry("+0+0")
 
+    shown = {"window": window}
+
     def step(i: int = 0) -> None:
         if i:
-            window.update()
-            x, y = window.winfo_rootx(), window.winfo_rooty()
-            ImageGrab.grab(bbox=(x, y, x + window.winfo_width(), y + window.winfo_height())).save(
+            target = shown["window"]
+            target.update()
+            x, y = target.winfo_rootx(), target.winfo_rooty()
+            ImageGrab.grab(bbox=(x, y, x + target.winfo_width(), y + target.winfo_height())).save(
                 out / f"{mode}-{PAGES[i - 1]}.png")
         if i == len(PAGES):
             root.destroy()
+            return
+        if PAGES[i] == "editor":
+            editor = ui.open_script(next(iter(scripts)))
+            editor.geometry("+0+0")
+            editor.show_error(12, "Строка 12: пример сообщения об ошибке")
+            shown["window"] = editor
+            root.after(1200, lambda: step(i + 1))
             return
         window.show(PAGES[i])
         if PAGES[i] == "keys":

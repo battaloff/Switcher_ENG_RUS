@@ -94,6 +94,27 @@ switch less eagerly there, e.g. many undos; negative = the person keeps fixing m
 rather than starting over.
 Return empty lists when nothing is warranted."""
 
+AHK_SYSTEM = """\
+You write and edit AutoHotkey scripts for a Windows user who speaks Russian. You get their request \
+and the script as it is now (possibly empty), and the AutoHotkey version to target.
+
+Return the whole new script, ready to save and run:
+- valid AutoHotkey v{major} syntax only — never mix v1 and v2 syntax;
+- {requires};
+- keep everything the user did not ask to change: their hotkeys, hotstrings, comments, order and style;
+- short comments in Russian for what you add;
+- send text with SendText (v2) or SendInput {{Text}} (v1) so that it comes out right on any keyboard layout;
+- nothing that deletes files, downloads or runs programs unless the request plainly asks for it.
+In "summary" tell the user in Russian, in one or two sentences, what you changed and which keys to press. \
+If the request is unclear or impossible, return the script unchanged and explain in "summary"."""
+
+_AHK_SCHEMA = {
+    "type": "object",
+    "properties": {"script": {"type": "string"}, "summary": {"type": "string"}},
+    "required": ["script", "summary"],
+    "additionalProperties": False,
+}
+
 _FIX_SCHEMA = {
     "type": "object",
     "properties": {"words": {"type": "array", "items": {"type": "string"}}},
@@ -260,6 +281,20 @@ class Assistant:
         if not isinstance(words, list) or len(words) != len(pieces) or not all(isinstance(w, str) for w in words):
             raise AIError("Claude вернул другое число слов")
         return "".join(w + p["delim"] for w, p in zip(words, pieces))
+
+    # -- AutoHotkey ------------------------------------------------------------
+
+    def write_ahk(self, request: str, script: str, major: int = 2) -> tuple[str, str]:
+        """(new script, what changed in Russian) for a request like «Ctrl+Alt+D — вставить дату»."""
+        requires = ("start with `#Requires AutoHotkey v2.0` (keep the line if it is there)" if major >= 2 else
+                    "keep the v1 header lines such as #NoEnv if they are there; no #Requires v2 line")
+        system = AHK_SYSTEM.format(major=major, requires=requires)
+        payload = {"request": request, "autohotkey_version": f"v{major}", "script": script}
+        data = self._ask(system, payload, _AHK_SCHEMA, effort="medium", max_tokens=16000)
+        new, summary = data.get("script"), data.get("summary")
+        if not isinstance(new, str) or not new.strip() or not isinstance(summary, str):
+            raise AIError("Claude не вернул скрипт")
+        return new.replace("\r\n", "\n"), summary.strip()
 
     # -- profile review ------------------------------------------------------
 

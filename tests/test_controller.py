@@ -762,6 +762,25 @@ def test_a_snippet_is_completed_as_soon_as_its_start_is_typed(make_screen):
     assert s.text == "015-510-400_4_12 745-605_4_"
 
 
+def test_snippets_can_be_switched_off(make_screen):
+    config = snippet_config()
+    config.snippets_enabled = False
+    s = make_screen(config, layout=EN)
+    s.keys("015 ")
+    assert s.text == "015 "
+
+
+def test_text_typed_by_autohotkey_is_not_taken_for_the_word(make_screen):
+    s = make_screen(layout=EN)
+    s.keys("ghb")
+    s.text += "by the way"  # an AutoHotkey hotstring typed this; Switcher only hears that something did
+    s._event("press", "foreign-input")
+    s.keys(" ")
+    assert s.text == "ghbby the way "  # nothing erased or "fixed" in what AutoHotkey typed
+    s.keys("ghbdtn ")
+    assert s.text == "ghbby the way привет "
+
+
 def test_only_at_the_start_of_a_word(make_screen):
     s = make_screen(snippet_config(), layout=EN)
     s.keys("1015 20150 ")

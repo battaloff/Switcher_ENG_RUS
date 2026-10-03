@@ -55,6 +55,9 @@ class Config:
     english_in_save_dialogs: bool = True  # "Save As": the file name is typed on the English layout
     # what the user starts typing → what Switcher completes it to: {"015": "015-510-400_4_"}
     snippets: dict[str, str] = field(default_factory=dict)
+    snippets_enabled: bool = True      # off: the snippets stay in the list, nothing is completed
+    # AutoHotkey scripts in the manager: path → start it together with Switcher
+    ahk_scripts: dict[str, bool] = field(default_factory=dict)
     early_switch: bool = True          # like Punto: switch after the first 3-4 letters, not at the end
     autocorrect: bool = True           # fix typos at the end of a word: "превет" → "привет"
     ru_variant: str = "auto"           # "pc" | "mac" | "auto"
