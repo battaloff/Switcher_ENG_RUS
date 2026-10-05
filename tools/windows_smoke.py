@@ -35,6 +35,8 @@ user32.FindWindowExW.restype = wintypes.HWND
 user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, ctypes.c_void_p)
 user32.SendMessageW.restype = ctypes.c_ssize_t
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
 user32.BringWindowToTop.argtypes = (wintypes.HWND,)
 user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
@@ -330,13 +332,20 @@ def main() -> int:
         user.press(Key.ctrl)
         user.press(Key.alt)
         tap(KeyCode.from_vk(vk_of["k"]))
+        # held until the script has typed: AutoHotkey lets Ctrl and Alt go while it types and puts them
+        # back down after, so letting go of them earlier would leave them stuck
+        time.sleep(1.5)
         user.release(Key.alt)
         user.release(Key.ctrl)
-        time.sleep(1.5)
-        note("AutoHotkey keys", f"moved: {moved!r}; script now {read_script(keyed)[0].splitlines()[2]!r}")
+        time.sleep(0.5)
+        held = [name for name, vk in (("Ctrl", 0x11), ("Alt", 0x12), ("Shift", 0x10))
+                if user32.GetAsyncKeyState(vk) & 0x8000]
+        note("AutoHotkey keys", f"moved: {moved!r}; script now {read_script(keyed)[0].splitlines()[2]!r}; "
+                                f"held after: {held}")
         check("a hotkey moved to Ctrl+Alt+K from Switcher works there", "клавиша")
         app.ahk.stop(str(keyed))
-        tap(Key.esc)  # whatever a stray Alt opened in Notepad
+        for key in (Key.alt, Key.ctrl, Key.shift):  # nothing may stay down for the checks after this one
+            user.release(key)
         time.sleep(0.3)
         reloaded = app.ahk.reload(str(ahk_script))
         time.sleep(2)
