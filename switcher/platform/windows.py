@@ -342,19 +342,24 @@ class WindowsBackend(BaseBackend):
         hwnd = user32.GetForegroundWindow()
         return bool(hwnd) and looks_like_save(hwnd) and has_file_browser(hwnd)
 
-    def _save_dialog_opened(self, hwnd: int, again: bool = True) -> None:
+    SAVE_DIALOG_RECHECKS = 3  # a dialog still setting itself up may miss the first requests
+
+    def _save_dialog_opened(self, hwnd: int, rechecks: int | None = None) -> None:
         from ..controller import KeyEvent
 
         if self._sink:
             self._sink(KeyEvent("press", "save-dialog", layout=self.current_layout(), app=self.active_app(),
                                 time=time.monotonic()))
-        if again:  # a dialog still setting itself up may miss the first request: make sure
-            threading.Timer(0.8, self._recheck_save_dialog, args=(hwnd,)).start()
+        rechecks = self.SAVE_DIALOG_RECHECKS if rechecks is None else rechecks
+        if rechecks > 0:
+            threading.Timer(0.8, self._recheck_save_dialog, args=(hwnd, rechecks - 1, time.monotonic())).start()
 
-    def _recheck_save_dialog(self, hwnd: int) -> None:
+    def _recheck_save_dialog(self, hwnd: int, rechecks: int, asked_at: float) -> None:
+        if self.last_key_at > asked_at:
+            return  # the user is typing (or switched the layout themselves): theirs from now on
         if user32.GetForegroundWindow() == hwnd and self.current_layout() != EN:
             log.info("the save dialog is still not on English: asking again")
-            self._save_dialog_opened(hwnd, again=False)
+            self._save_dialog_opened(hwnd, rechecks)
 
     def stop(self) -> None:
         if self._save_dialogs is not None:

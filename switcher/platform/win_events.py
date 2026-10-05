@@ -75,6 +75,7 @@ def has_file_browser(hwnd) -> bool:
 
 
 class SaveDialogWatcher:
+    TRIES = 25  # looks, 0.3 s apart: a slow PC may take seconds to fill a dialog in
     def __init__(self, on_save_dialog: Callable[[int], None], on_foreground: Callable[[int], None] | None = None):
         self._on_save_dialog = on_save_dialog
         self._on_foreground = on_foreground
@@ -123,7 +124,7 @@ class SaveDialogWatcher:
                 self._on_foreground(hwnd)
             if _class(hwnd) == "#32770" and hwnd not in self._seen and hwnd not in self._pending:
                 self._pending.add(hwnd)
-                self._check(hwnd, tries=10)
+                self._check(hwnd, tries=self.TRIES)
         except Exception:
             log.exception("save dialog check failed")
 

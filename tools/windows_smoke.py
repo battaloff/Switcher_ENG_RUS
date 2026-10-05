@@ -332,11 +332,17 @@ def main() -> int:
     user.press(Key.ctrl)
     tap(KeyCode.from_vk(vk_of["s"]))
     user.release(Key.ctrl)
-    time.sleep(3)
+    asked = time.time()
+    time.sleep(1)
+    while time.time() - asked < 8 and app.backend.current_layout() != EN:  # a slow runner: give it time
+        time.sleep(0.2)
+    waited = time.time() - asked
     fg = user32.GetForegroundWindow()
     lang = app.backend.current_layout()
     saved = class_name(fg) == "#32770" and lang == EN
-    print(f"{'OK  ' if saved else 'FAIL'} Save As switched to English: window {class_name(fg)!r}, layout {lang}")
+    print(f"{'OK  ' if saved else 'FAIL'} Save As switched to English: window {class_name(fg)!r}, "
+          f"layout {lang} after {waited:.1f} s; Switcher thinks "
+          f"{app.controller.layout}, save dialog in front: {app.backend.in_save_dialog()}")
     results.append(saved)
     # the file name typed there with a snippet, as it is meant to be used
     from switcher.platform.windows import GUITHREADINFO
