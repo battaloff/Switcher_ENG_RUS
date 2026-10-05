@@ -443,3 +443,56 @@ def test_clashes_with_autohotkey_are_shown(profile, keyboard, monkeypatch, tmp_p
                 editor.destroy()
         window.destroy()
         ROOT.update()
+
+
+def test_autohotkey_hotkeys_are_listed_reassigned_and_added(profile, keyboard, monkeypatch, tmp_path):
+    from switcher import ahk, ahk_dialogs
+    from switcher.ahk_hotkeys import MY_SCRIPT
+
+    monkeypatch.setattr(autostart, "is_enabled", lambda: False)
+    monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
+    app = FakeApp(profile, keyboard)
+    script = tmp_path / "keys.ahk"
+    script.write_text('#Requires AutoHotkey v2.0\n; дата\n^!d::SendText "сегодня"\n::btw::by the way\n',
+                      encoding="utf-8")
+    system = FakeAhkSystem()
+    system.windows = {str(script): 3}
+    app.config.ahk_scripts = {str(script): True}
+    app.ahk = ahk.AhkManager(app.config, system=system)
+    ui = gui.Ui(app, root=ROOT)
+    ui.open_settings(tab="ahk_keys")
+    window = ui.window
+    ROOT.update()
+    try:
+        rows = [window.keys_tree.item(iid, "values") for iid in window.keys_tree.get_children()]
+        assert rows == [("Ctrl + Alt + D", "дата", "keys, стр. 3"), ("набрать «btw»", "by the way", "keys, стр. 4")]
+        binding = window._bindings[window.keys_tree.get_children()[0]]
+        assert window.assign_binding(binding, "<ctrl>+<alt>+t") is None
+        assert '^!t::SendText "сегодня"' in script.read_text(encoding="utf-8")
+        assert window.keys_tree.item(window.keys_tree.get_children()[0], "values")[0] == "Ctrl + Alt + T"
+
+        monkeypatch.setattr(window, "scripts_folder", lambda: tmp_path / "AutoHotkey")
+        dialog = ahk_dialogs.AddHotkeyDialog(window, window.add_hotkey)
+        ROOT.update()
+        dialog.recording = True
+        dialog._recorded("<ctrl>+<alt>+m")
+        dialog.value.insert(0, "me@example.com")
+        dialog.note.insert(0, "почта")
+        dialog.done()
+        mine = tmp_path / "AutoHotkey" / MY_SCRIPT
+        assert '^!m::SendText "me@example.com"' in mine.read_text(encoding="utf-8-sig")
+        assert app.saved[-1].ahk_scripts[str(mine)] is True and str(mine) in system.windows  # started
+        keys = {window.keys_tree.item(iid, "values")[0]: iid for iid in window.keys_tree.get_children()}
+        window.keys_tree.selection_set(keys["Ctrl + Alt + M"])
+        window.remove_selected_binding()
+        assert "^!m::" not in mine.read_text(encoding="utf-8-sig")
+        window.keys_tree.selection_set(window.keys_tree.get_children()[0])
+        window.remove_selected_binding()  # not Switcher's own: only in the editor
+        assert "^!t::" in script.read_text(encoding="utf-8") and "в редакторе" in window.keys_hint.cget("text")
+        assert window.assign_binding(binding, "double_shift") is not None
+    finally:
+        for editor in ui.editors:
+            if editor.winfo_exists():
+                editor.destroy()
+        window.destroy()
+        ROOT.update()

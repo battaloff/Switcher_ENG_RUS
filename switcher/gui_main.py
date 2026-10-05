@@ -182,7 +182,7 @@ def selftest(report: str | None = None) -> int:
         ui = Ui(state["app"])
         ui.open_settings(welcome=True)
         ui.root.update()
-        for tab in ("main", "keys", "snippets", "ahk", "ai", "rules", "stats", "updates"):
+        for tab in ("main", "keys", "snippets", "ahk", "ahk_keys", "ai", "rules", "stats", "updates"):
             ui.window.show(tab)
             ui.root.update()
         ui.root.destroy()
@@ -196,7 +196,7 @@ def selftest(report: str | None = None) -> int:
     step("обновления", updates)
 
     def autohotkey():
-        from . import ahk_editor  # noqa: F401  (bundled: imported only when a script is opened)
+        from . import ahk_dialogs, ahk_editor, ahk_hotkeys  # noqa: F401  (bundled, imported on demand)
 
         manager = state["app"].ahk
         assert manager.supported, "no AutoHotkey support in this build"

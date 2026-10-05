@@ -246,6 +246,14 @@ class ScriptEditor(ctk.CTkToplevel):
             return "break"
         return None
 
+    def goto(self, line: int) -> None:
+        """Put the cursor on a line and show it (opened from the list of hotkeys)."""
+        self.text.mark_set("insert", f"{line}.0")
+        self.text.see(f"{line}.0")
+        self.text.tag_remove("sel", "1.0", "end")
+        self.text.tag_add("sel", f"{line}.0", f"{line}.0 lineend")
+        self.text.focus_set()
+
     def show_error(self, line: int | None, message: str) -> None:
         self.text.tag_remove("error", "1.0", "end")
         if line:

@@ -176,6 +176,7 @@ class Tray:
         yield pystray.MenuItem("Остановить все", lambda icon, item: act(manager.stop_all),
                                enabled=bool(manager.running()))
         yield pystray.MenuItem("Скрипты и редактор…", lambda icon, item: ui.call(lambda: ui.open_settings(tab="ahk")))
+        yield pystray.MenuItem("Горячие клавиши…", lambda icon, item: ui.call(lambda: ui.open_settings(tab="ahk_keys")))
 
     def stop(self) -> None:
         if self.icon is not None:

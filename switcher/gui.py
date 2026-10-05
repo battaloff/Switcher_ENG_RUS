@@ -90,7 +90,7 @@ class Ui:
         self.window = SettingsWindow(self, welcome=welcome)
         self.window.show(tab or ("ai" if welcome else None))
 
-    def open_script(self, path: str, on_saved=None):
+    def open_script(self, path: str, on_saved=None, line: int | None = None):
         """The AutoHotkey editor; it outlives the settings window."""
         from .ahk_editor import open_editor
 
@@ -99,6 +99,8 @@ class Ui:
                 editor.deiconify()
                 editor.lift()
                 editor.focus_force()
+                if line:
+                    editor.goto(line)
                 return editor
         try:
             editor = open_editor(self.root, self.app, path, on_saved)
@@ -106,6 +108,8 @@ class Ui:
             messagebox.showerror("Switcher", f"Не удалось открыть {path}: {exc}")
             return None
         self.editors = [e for e in self.editors if e.winfo_exists()] + [editor]
+        if line:
+            editor.after(150, lambda: editor.goto(line))
         return editor
 
 
@@ -269,7 +273,8 @@ def _logo_image():
 
 class SettingsWindow(ctk.CTkToplevel):
     PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"), ("ahk", "AutoHotkey"),
-             ("ai", "Claude (ИИ)"), ("rules", "Правила"), ("stats", "Что я о вас знаю"), ("updates", "Обновления"))
+             ("ahk_keys", "Клавиши AHK"), ("ai", "Claude (ИИ)"), ("rules", "Правила"), ("stats", "Что я о вас знаю"),
+             ("updates", "Обновления"))
 
     def __init__(self, ui: Ui, welcome: bool = False):
         apply_theme()
@@ -333,6 +338,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "keys": self._keys_tab(),
             "snippets": self._snippets_tab(),
             "ahk": self._ahk_tab(),
+            "ahk_keys": self._ahk_keys_tab(),
             "ai": self._ai_tab(),
             "rules": self._rules_tab(),
             "stats": self._stats_tab(),
@@ -404,6 +410,8 @@ class SettingsWindow(ctk.CTkToplevel):
             self.refresh_stats()
         if tab == "ahk":
             self.refresh_ahk()
+        if tab == "ahk_keys":
+            self.refresh_ahk_keys()
         if tab == "updates" and not self._releases_shown:
             if getattr(self.app, "releases", None) is not None:
                 self.show_releases(self.app.releases)
@@ -769,7 +777,7 @@ class SettingsWindow(ctk.CTkToplevel):
         return page
 
     def _ahk_changed(self) -> None:
-        self.ui.call(lambda: self.winfo_exists() and self.refresh_ahk())
+        self.ui.call(lambda: self.winfo_exists() and (self.refresh_ahk(), self.refresh_ahk_keys()))
 
     def refresh_ahk(self) -> None:
         manager = self.ahk
@@ -903,6 +911,184 @@ class SettingsWindow(ctk.CTkToplevel):
         folder = Path(selected[0]).parent if selected else self.scripts_folder()
         folder.mkdir(parents=True, exist_ok=True)
         open_folder(folder)
+
+    # -- AutoHotkey hotkeys -------------------------------------------------------
+
+    def _ahk_keys_tab(self):
+        page = self._page("Клавиши AutoHotkey", "Горячие клавиши и замены из ваших скриптов. «Назначить…» — нажмите "
+                                                "новое сочетание: Switcher перепишет скрипт и перезапустит его. "
+                                                "«Добавить…» — новая клавиша без программирования.", scroll=False)
+        buttons = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        buttons.pack(side="bottom", fill="x", pady=(12, 0))
+        self._button(buttons, "Назначить сочетание…", self.assign_selected, primary=True).pack(side="left")
+        self._button(buttons, "Добавить…", self.add_hotkey_dialog).pack(side="left", padx=8)
+        self._button(buttons, "Открыть в редакторе", self.open_selected_binding).pack(side="left")
+        self._button(buttons, "Удалить", self.remove_selected_binding, danger=True).pack(side="right")
+        self.keys_hint = ctk.CTkLabel(page, text="", font=self.fonts["small"], text_color=MUTED, anchor="w",
+                                      justify="left", wraplength=620)
+        self.keys_hint.pack(side="bottom", fill="x", pady=(10, 0))
+        card = self._card(page, expand=True)
+        self.keys_tree = ttk.Treeview(card, columns=("keys", "what", "script"), show="headings",
+                                      style="Switcher.Treeview")
+        for col, title, width in (("keys", "Клавиши", 160), ("what", "Что делает", 250), ("script", "Скрипт", 190)):
+            self.keys_tree.heading(col, text=title, anchor="w")
+            self.keys_tree.column(col, width=width, minwidth=60, anchor="w", stretch=col == "what")
+        scroll = ctk.CTkScrollbar(card, command=self.keys_tree.yview)
+        self.keys_tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y", padx=(0, 4), pady=8)
+        self.keys_tree.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=10)
+        self.keys_tree.bind("<Double-1>", lambda event: self.assign_selected())
+        self._bindings: dict[str, object] = {}
+        self.refresh_ahk_keys()
+        return page
+
+    def refresh_ahk_keys(self) -> None:
+        from .ahk_hotkeys import list_bindings
+
+        manager = self.ahk
+        self.keys_tree.delete(*self.keys_tree.get_children())
+        self._bindings = {}
+        if manager is None or not manager.supported:
+            self.keys_hint.configure(text="AutoHotkey работает только в Windows.")
+            return
+        paths = {ahk.norm(p): p for p in self.config_copy.ahk_scripts}
+        for path in manager.running():
+            paths.setdefault(ahk.norm(path), path)
+        count = clashes = 0
+        mine = {spec.strip().lower() for spec in vars(self.config_copy.hotkeys).values() if spec}
+        for path in sorted(paths.values(), key=lambda p: ahk.name_of(p).lower()):
+            try:
+                text = ahk.read_script(path)[0]
+            except OSError:
+                continue
+            for binding in list_bindings(path, text):
+                iid = f"b{count}"
+                count += 1
+                self._bindings[iid] = binding
+                clash = binding.spec is not None and binding.spec.lower() in mine
+                clashes += clash
+                self.keys_tree.insert("", "end", iid=iid, values=(("⚠ " if clash else "") + binding.keys,
+                                                                   binding.what,
+                                                                   f"{ahk.name_of(path)}, стр. {binding.line}"))
+        if not count:
+            self.keys_hint.configure(text="В ваших скриптах пока нет горячих клавиш. «Добавить…» — создать первую.")
+        elif clashes:
+            self.keys_hint.configure(text="⚠ — это сочетание есть и у Switcher: сработает скрипт. Назначьте другое.")
+        else:
+            self.keys_hint.configure(text="")
+
+    def _selected_binding(self):
+        selected = [self._bindings[iid] for iid in self.keys_tree.selection() if iid in self._bindings]
+        if not selected:
+            self.keys_hint.configure(text="Выберите клавишу в списке.")
+            return None
+        return selected[0]
+
+    def _clash(self, spec: str, skip=None) -> str | None:
+        """Who else has these keys: Switcher itself or another hotkey in the scripts."""
+        for name, title in HOTKEY_ACTIONS:
+            if self.config_copy.hotkeys.__dict__.get(name, "").strip().lower() == spec.lower():
+                return f"в Switcher это «{title}»"
+        for path, line, written in self.ahk.scripts_using(spec) if self.ahk else []:
+            if skip is None or ahk.norm(path) != ahk.norm(skip.path) or line != skip.line:
+                return f"в скрипте «{ahk.name_of(path)}» (строка {line}: {written})"
+        return None
+
+    def _rewrite_script(self, path: str, change) -> str | None:
+        try:
+            text, encoding, newline = ahk.read_script(path)
+            ahk.write_script(path, change(text), encoding, newline)
+        except (OSError, ValueError) as exc:
+            return f"Не получилось изменить скрипт: {exc}"
+        manager = self.ahk
+        if manager is not None and manager.is_running(path):
+            error = manager.reload(path)
+            if error:
+                return error
+        return None
+
+    def assign_binding(self, binding, spec: str) -> str | None:
+        """Move a script's hotkey to ``spec``; an error to show, or None."""
+        from .ahk_hotkeys import ahk_label, relabel
+
+        label = ahk_label(spec)
+        if label is None:
+            return "AutoHotkey не понимает двойное нажатие — выберите сочетание с Ctrl, Alt или Win."
+        clash = self._clash(spec, skip=binding)
+        if clash and not messagebox.askyesno("Switcher", f"{format_hotkey(spec)} уже занято: {clash}. Всё равно "
+                                                         "назначить?", parent=self):
+            return "Выберите другое сочетание."
+        error = self._rewrite_script(binding.path, lambda text: relabel(text, binding.line, binding.written, label))
+        if error:
+            return error
+        self.refresh_ahk_keys()
+        self.keys_hint.configure(text=f"Готово: «{binding.what}» теперь на {format_hotkey(spec)}.")
+        return None
+
+    def assign_selected(self) -> None:
+        from .ahk_dialogs import RecordDialog
+
+        binding = self._selected_binding()
+        if binding is None:
+            return
+        if binding.kind != "hotkey":
+            self.open_selected_binding()  # a hotstring is typed, not pressed: change it in the editor
+            return
+        RecordDialog(self, f"«{binding.what}» — сейчас {binding.keys}", lambda spec: self.assign_binding(binding, spec))
+
+    def add_hotkey(self, spec: str, kind: str, value: str, note: str = "") -> str | None:
+        """A new hotkey in Switcher's own script; an error to show, or None."""
+        from .ahk_hotkeys import add_binding, ahk_label, my_script
+
+        manager = self.ahk
+        if manager is None or not manager.supported:
+            return "AutoHotkey работает только в Windows."
+        label = ahk_label(spec)
+        if label is None:
+            return "AutoHotkey не понимает двойное нажатие — выберите сочетание с Ctrl, Alt или Win."
+        clash = self._clash(spec)
+        if clash and not messagebox.askyesno("Switcher", f"{format_hotkey(spec)} уже занято: {clash}. Всё равно "
+                                                         "добавить?", parent=self):
+            return "Выберите другое сочетание."
+        path = my_script(self.scripts_folder(), manager.preferred_major())
+        major = ahk.script_version(ahk.read_script(path)[0]) or manager.preferred_major()
+        note = note or value[:60]
+        error = self._rewrite_script(str(path), lambda text: add_binding(text, label, kind, value, major, note))
+        if error:
+            return error
+        if ahk.norm(path) not in {ahk.norm(p) for p in self.config_copy.ahk_scripts}:
+            self._save_ahk({**self.config_copy.ahk_scripts, str(path): True})
+        if not manager.is_running(str(path)):
+            error = manager.start(str(path))
+        self.refresh_ahk_keys()
+        self.keys_hint.configure(text=error or f"Готово: {format_hotkey(spec)} — {note}.")
+        return None
+
+    def add_hotkey_dialog(self) -> None:
+        from .ahk_dialogs import AddHotkeyDialog
+
+        AddHotkeyDialog(self, self.add_hotkey)
+
+    def open_selected_binding(self) -> None:
+        binding = self._selected_binding()
+        if binding is not None:
+            self.ui.open_script(binding.path, on_saved=lambda p: self._ahk_changed(), line=binding.line)
+
+    def remove_selected_binding(self) -> None:
+        from .ahk_hotkeys import MY_SCRIPT, remove_line
+
+        binding = self._selected_binding()
+        if binding is None:
+            return
+        if Path(binding.path).name != MY_SCRIPT or not binding.one_line:
+            self.keys_hint.configure(text="Здесь удаляются только клавиши, добавленные в Switcher. Эту уберите "
+                                          "в редакторе — «Открыть в редакторе».")
+            return
+        if not messagebox.askyesno("Switcher", f"Удалить {binding.keys} — «{binding.what}»?", parent=self):
+            return
+        error = self._rewrite_script(binding.path, lambda text: remove_line(text, binding.line))
+        self.refresh_ahk_keys()
+        self.keys_hint.configure(text=error or f"Удалено: {binding.keys}.")
 
     def _stats_tab(self):
         page = self._page("Что я о вас знаю", "Всё, что Switcher выучил о вашей печати. Данные хранятся только "

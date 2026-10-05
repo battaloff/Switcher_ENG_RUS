@@ -307,6 +307,34 @@ def main() -> int:
         check("Switcher goes on right after AutoHotkey typed", "готово привет ")
         note("AutoHotkey keys", f"dropped injected {app.backend.injected_dropped}, "
                                 f"accept injected {app.backend.accept_injected}")
+        # a hotkey moved to other keys, as the "Клавиши AHK" settings page does it
+        from switcher.ahk import read_script, write_script
+        from switcher.ahk_hotkeys import ahk_label, list_bindings, relabel
+
+        keyed = Path(os.environ["SWITCHER_HOME"]) / "keys.ahk"
+        keyed.write_text('#Requires AutoHotkey v2.0\n#SingleInstance Force\n^!F9::SendText "клавиша"\n',
+                         encoding="utf-8-sig")
+        app.ahk.start(str(keyed))
+        deadline = time.time() + 10
+        while not app.ahk.is_running(str(keyed)) and time.time() < deadline:
+            time.sleep(0.3)
+        text, encoding, newline = read_script(keyed)
+        binding = list_bindings(str(keyed), text)[0]
+        write_script(keyed, relabel(text, binding.line, binding.written, ahk_label("<ctrl>+<alt>+<f10>")),
+                     encoding, newline)
+        moved = app.ahk.reload(str(keyed))
+        time.sleep(2.5)
+        focus_notepad()
+        clear()
+        user.press(Key.ctrl)
+        user.press(Key.alt)
+        tap(Key.f10)
+        user.release(Key.alt)
+        user.release(Key.ctrl)
+        time.sleep(1.5)
+        note("AutoHotkey keys", f"moved: {moved!r}; script now {read_script(keyed)[0].splitlines()[2]!r}")
+        check("a hotkey moved to Ctrl+Alt+F10 from Switcher works there", "клавиша")
+        app.ahk.stop(str(keyed))
         reloaded = app.ahk.reload(str(ahk_script))
         time.sleep(2)
         running_after_reload = app.ahk.is_running(str(ahk_script))

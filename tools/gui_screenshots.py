@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGES = ["main", "keys", "snippets", "ahk", "ai", "rules", "stats", "updates", "editor"]
+PAGES = ["main", "keys", "snippets", "ahk", "ahk_keys", "ai", "rules", "stats", "updates", "editor"]
 SAMPLE_SCRIPT = """#Requires AutoHotkey v2.0
 #SingleInstance Force
 
