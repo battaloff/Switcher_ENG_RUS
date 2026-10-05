@@ -661,11 +661,37 @@ class Controller:
         if word in _KEEP_TWO_CAPITALS or self.learner.profile.get_rule("case", word) is not None:
             return None  # "ВКонтакте", or a word the user put back with double Shift
         zipf = self.speller.zipf(word, lang)
+        if lang == RU and self._abbreviation_with_ending(core) and (zipf is None or zipf < 3.5):
+            return None  # "с ДРом", "в ЛСе": an abbreviation with a case ending, not a late Shift
         if zipf is not None and zipf >= (5.0 if len(word) <= 3 else 3.0):
             return fixed  # "THe", "ПРивет"; but not "IDs", "PCs" (short and not that common) or "VMware"
         if len(word) > 3 and core.isalpha() and self.config.autocorrect and self.speller.suggest(word, lang):
             return fixed  # "ЗДривствуйте": the typo gets fixed next
+        if lang == RU and self._shift_held_too_long(core):
+            return fixed  # "МАники", "ЙУк": names and words Switcher does not know
         return None
+
+    @staticmethod
+    def _abbreviation_with_ending(core: str) -> bool:
+        """"ДРом", "ПКа", "ЛСе": two capital consonants and a case ending."""
+        letters = "".join(ch for ch in core if ch.isalpha())
+        vowels = "АЕЁИОУЫЭЮЯ"
+        return (len(letters) >= 3 and letters[0] not in vowels and letters[1] not in vowels
+                and letters[2:] in ("а", "у", "е", "ы", "и", "ом", "ам", "ах", "ов", "ой", "ами"))
+
+    @staticmethod
+    def _shift_held_too_long(core: str) -> bool:
+        """A Russian word Switcher does not know, in the shape of Shift let go a letter late.
+
+        Russian words made from abbreviations keep their capitals and start with consonants or
+        end in a suffix: "ДРом", "ИПшник", "ПКшка", "ПОшка", "ЛСке".  A capital vowel right after
+        the first letter, not followed by such a suffix, is a word start: "МАники", "ЙУк".
+        """
+        letters = [ch for ch in core if ch.isalpha()]
+        if len(letters) < 3 or letters[1] not in "АЕЁИОУЫЭЮЯ":
+            return False
+        rest = "".join(letters[2:])
+        return not rest.startswith(("ш", "щ")) and rest not in ("е", "у", "ом", "ам", "ах", "ов", "ой")
 
     def _apply_two_capitals(self, tok: Token) -> None:
         """"ЗДравствуйте" → "Здравствуйте" once the word is finished."""

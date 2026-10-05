@@ -954,3 +954,18 @@ def test_risky_rules_learned_before_are_dropped(models, keyboard, profile):
     profile.add_rule("layout", "d", EN, source="user")
     Learner(profile, models, keyboard)
     assert sorted(r.pattern for r in profile.rules("layout")) == ["d", "ghbdtn"]
+
+
+def test_two_capitals_in_words_switcher_does_not_know(make_screen):
+    s = make_screen(layout=RU)
+    s.write("ЙУк МАники ", RU)  # Uzbek "йук", a name: the Shift was let go a letter late
+    assert s.text == "Йук Маники "
+
+
+def test_abbreviations_keep_their_capitals(make_screen):
+    s = make_screen(layout=RU)
+    s.write("с ДРом ИПшник ЦУшки ПКа ВКонтакте ТЦ ", RU)
+    assert s.text == "с ДРом ИПшник ЦУшки ПКа ВКонтакте ТЦ "
+    s = make_screen(layout=RU)
+    s.write("СТол ГРом ", RU)  # known words: a late Shift
+    assert s.text == "Стол Гром "
