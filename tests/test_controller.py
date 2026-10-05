@@ -969,3 +969,9 @@ def test_abbreviations_keep_their_capitals(make_screen):
     s = make_screen(layout=RU)
     s.write("СТол ГРом ", RU)  # known words: a late Shift
     assert s.text == "Стол Гром "
+
+
+def test_a_long_word_with_a_neighbouring_key_hit_on_the_way(make_screen):
+    s = make_screen(layout=RU)
+    s.write("Заниматекльная ", RU)  # "к" is next to "е": the finger caught it on the way
+    assert s.text == "Занимательная "

@@ -11,10 +11,13 @@ Frequencies are Zipf values (log10 per billion words) from the same lexicon the
 layout engine uses: "превет" 1.3 → "привет" 5.1, "teh" 3.0 → "the" 7.7, while
 slang such as "щас" or "ваще" is either common enough or too far from any word.
 
-Measured with tools/evaluate_spelling.py: 0.03% of frequent words typed right
+Measured with tools/evaluate_spelling.py: 0.04% of frequent words typed right
 get changed (rare real words; an undo protects them for good), 72% of typical
 single-slip typos get fixed.  Fixing a selection the user asked to fix
-(Shift+Pause) may be bolder: 79% of typos, 0.09% of frequent words.
+(Shift+Pause) may be bolder: 79% of typos, 0.10% of frequent words.  Long words
+(9+ letters) have no twins one slip away, so rarer forms count as candidates
+there ("заниматекльная" → "занимательная", Zipf 2.8): of mid-frequency long
+words with a neighbouring key hit on the way, 30% instead of 9% get fixed.
 """
 
 from __future__ import annotations
@@ -42,11 +45,13 @@ class SpellTuning:
     min_length: int = 3
     short_extra: float = 1.0        # 3-letter words need a bigger lead
     min_candidate: float = 3.0      # never correct into a rare word
+    long_min_drop: float = 0.15     # ...but long words have no twins one slip away: per letter beyond 8
+    long_min_floor: float = 2.0
     known_max: float = 3.5          # a typed word this common is never touched
     unknown_score: float = 1.5      # what an unknown typed word is worth
     gap: float = 1.5                # candidate (minus edit cost) must beat the typed word by this much
     long_bonus: float = 0.15        # ...a little less per letter beyond 6: long words rarely have twins
-    long_bonus_max: float = 0.6
+    long_bonus_max: float = 1.0
     lead: float = 1.0               # ...and the runner-up by this much
     cost_swap: float = 0.5          # "teh" → "the"
     cost_near: float = 0.8          # neighbouring key
@@ -54,6 +59,7 @@ class SpellTuning:
     cost_double: float = 0.6        # "untill" → "until", "расчитать" → "рассчитать"
     cost_drop: float = 1.0          # "спсибо" → "спасибо"
     cost_extra: float = 1.0         # "приветт" → "привет"
+    cost_extra_near: float = 0.6    # a neighbouring key hit on the way: "заниматекльная" (к is next to е)
     cost_vowel: float = 1.4         # a vowel for another vowel: "здривствуйте" → "здравствуйте"
     cost_other: float = 2.2         # any other letter
     cost_first: float = 1.0         # extra for adding or dropping the first letter: people rarely slip there
@@ -137,7 +143,9 @@ class Speller:
             if doubled:
                 add(rest, t.cost_double, "extra")
             else:
-                add(rest, t.cost_extra + (t.cost_first if i == 0 else place(i)), "extra")
+                beside = (i > 0 and ch in near.get(word[i - 1], ())) or (i + 1 < n and ch in near.get(word[i + 1], ()))
+                cost = t.cost_extra_near if beside else t.cost_extra
+                add(rest, cost + (t.cost_first if i == 0 else place(i)), "extra")
             if i + 1 < n and word[i + 1] != ch:
                 add(word[:i] + word[i + 1] + ch + word[i + 2:], t.cost_swap, "swap")
             for other in letters:
@@ -177,9 +185,11 @@ class Speller:
         typed_score = max(typed, t.unknown_score) if typed is not None else t.unknown_score
         scored = []
         lexicon = self.models[lang].lexicon
+        min_candidate = max(min(t.long_min_floor, t.min_candidate),
+                            t.min_candidate - t.long_min_drop * max(0, len(word) - 8))
         for candidate, (cost, kind) in self.candidates(word, lang, t).items():
             z = lexicon.zipf(candidate)  # exact: "фиолетовыё" is not "фиолетовые"
-            if z is not None and z >= t.min_candidate:
+            if z is not None and z >= min_candidate:
                 scored.append((z - cost, z, candidate, kind))
         if not scored:
             return None
