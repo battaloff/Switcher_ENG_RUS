@@ -252,7 +252,7 @@ class App:
         with self._reviewing:
             self.profile.flush()
             digest, proposal = self.assistant.review(self.profile, self.keyboard)
-            outcome = apply_review(proposal, self.profile, self.keyboard)
+            outcome = apply_review(proposal, self.profile, self.keyboard, models=self.models)
         return digest, proposal, outcome
 
     def review_and_notify(self) -> None:

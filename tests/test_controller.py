@@ -916,3 +916,41 @@ def test_words_that_are_no_typos_stay(make_screen):
     s = make_screen(layout=RU)
     s.write("щас ржунимагу ", RU)
     assert s.text == "щас ржунимагу "
+
+
+def test_a_rule_for_one_key_does_not_turn_ya_into_z(make_screen, profile):
+    """A rule "the key z stays English" (learned from one odd case) turned «Да я понял» into «Да z понял»."""
+    profile.add_rule("layout", "z", EN, source="learned")
+    profile.add_rule("layout", "yf", EN, source="learned")  # "на"
+    s = make_screen(layout=RU)
+    s.write("Да я понял, на ", RU)
+    assert s.text == "Да я понял, на "
+    profile.add_rule("layout", "z", EN, source="user")  # one the user added by hand still counts
+    s = make_screen(layout=RU)
+    s.write("я ", RU)
+    assert s.text == "z "
+
+
+def test_no_rule_is_learned_for_one_key_or_a_common_word(models, keyboard, profile):
+    from switcher.learner import Learner
+
+    learner = Learner(profile, models, keyboard)
+    strokes = keyboard.strokes("z", EN)
+    learner.undo(app="telegram", strokes=strokes, typed_lang=EN, typed_text="z", converted_lang=RU,
+                 converted_text="я")  # the user wanted a Latin "z" once
+    learner.manual(app="telegram", strokes=keyboard.strokes("yf", EN), typed_lang=RU, typed_text="на",
+                   target_lang=EN, target_text="yf")  # "на" is too common to ever be turned into "yf"
+    learner.manual(app="telegram", strokes=keyboard.strokes("ghbdtn", EN), typed_lang=EN, typed_text="ghbdtn",
+                   target_lang=RU, target_text="привет")
+    assert [r.pattern for r in profile.rules("layout")] == ["ghbdtn"]
+
+
+def test_risky_rules_learned_before_are_dropped(models, keyboard, profile):
+    from switcher.learner import Learner
+
+    profile.add_rule("layout", "z", EN, source="learned")
+    profile.add_rule("layout", "yf", EN, source="ai")
+    profile.add_rule("layout", "ghbdtn", RU, source="learned")
+    profile.add_rule("layout", "d", EN, source="user")
+    Learner(profile, models, keyboard)
+    assert sorted(r.pattern for r in profile.rules("layout")) == ["d", "ghbdtn"]

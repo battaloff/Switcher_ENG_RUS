@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import AI
-from .engine import split_core
+from .engine import risky_rule, split_core
 from .langmodel import is_word
 from .layouts import EN, RU, Keyboard, Stroke, canonical_keys, text_lang
 from .learner import levenshtein
@@ -339,8 +339,8 @@ def build_digest(profile: Profile, keyboard: Keyboard, limit: int = 300) -> dict
     }
 
 
-def apply_review(proposal: dict, profile: Profile, keyboard: Keyboard, known_apps: set[str] | None = None
-                 ) -> ReviewOutcome:
+def apply_review(proposal: dict, profile: Profile, keyboard: Keyboard, known_apps: set[str] | None = None,
+                 models=None) -> ReviewOutcome:
     """Validate Claude's proposal and apply the sound parts."""
     out = ReviewOutcome()
     known_apps = known_apps if known_apps is not None else set(profile.app_stats()) | set(profile.tuning())
@@ -356,6 +356,9 @@ def apply_review(proposal: dict, profile: Profile, keyboard: Keyboard, known_app
             out.rejected.append(f"layout {word!r}")
             continue
         keys = canonical_keys(strokes)
+        if models is not None and risky_rule(models, keyboard, keys, lang):
+            out.rejected.append(f"layout {word!r}")  # "z" → en would turn every "я" into "z"
+            continue
         existed = profile.get_rule("layout", keys, app)
         rule = profile.add_rule("layout", keys, lang, app=app, source="ai", note=str(item.get("reason", ""))[:200])
         if rule is not None and (existed is None or existed.value != lang):

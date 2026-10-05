@@ -16,13 +16,16 @@ Signals, from strongest to weakest:
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from .config import Learning
-from .engine import split_core
+from .engine import risky_rule, split_core
 from .langmodel import Models, is_word
 from .layouts import Keyboard, Stroke, canonical_keys
 from .profile import Profile
+
+log = logging.getLogger(__name__)
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -50,8 +53,24 @@ class Learner:
         self.keyboard = keyboard
         self.config = config or Learning()
         self.on_feedback = on_feedback
+        self.forget_risky_rules()
+
+    def forget_risky_rules(self) -> None:
+        """Drop learned rules like "the key z stays English": they turn every "я" into "z"."""
+        for rule in self.profile.rules("layout"):
+            if rule.source in ("learned", "ai") and rule.value in ("en", "ru"):
+                why = risky_rule(self.models, self.keyboard, rule.pattern, rule.value)
+                if why:
+                    self.profile.remove_rule("layout", rule.pattern, rule.app)
+                    log.warning("dropped the learned rule %r → %s: %s", rule.pattern, rule.value, why)
 
     # -- helpers -----------------------------------------------------------
+
+    def _risky(self, keys: str, lang: str) -> bool:
+        why = risky_rule(self.models, self.keyboard, keys, lang)
+        if why:
+            log.info("not learning %r → %s: %s", keys, lang, why)
+        return why is not None
 
     def core_keys(self, strokes: list[Stroke], text: str, lang: str) -> str:
         start, end, _ = core_of(text, lang)
@@ -105,7 +124,7 @@ class Learner:
         self.profile.log_event("undo", app=app, keys=keys, typed_lang=typed_lang, final_lang=typed_lang,
                                typed_text=typed_text, final_text=typed_text,
                                detail={"was": converted_text, "reason": reason, "via": via})
-        if keys:
+        if keys and not self._risky(keys, typed_lang):
             self.profile.add_rule("layout", keys, typed_lang, source="learned",
                                   note=f"не переключать «{typed_text}» в «{converted_text}»")
         if reason == "model":
@@ -127,7 +146,7 @@ class Learner:
                                typed_text=typed_text, final_text=target_text, margin=margin,
                                detail={"via": via})
         rule = None
-        if keys:
+        if keys and not self._risky(keys, target_lang):
             rule = self.profile.add_rule("layout", keys, target_lang, source="learned",
                                          note=f"«{typed_text}» → «{target_text}» ({via})")
         if margin is not None and margin > 0:

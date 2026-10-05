@@ -305,7 +305,11 @@ class Engine:
 
         # Rules taught by the user win over everything else.
         for reading in (typed, alt):
-            rule = self.profile.layout_rule(canonical_keys(strokes[reading.core_strokes_slice]), ctx.app)
+            keys = canonical_keys(strokes[reading.core_strokes_slice])
+            rule = self.profile.layout_rule(keys, ctx.app)
+            if rule and rule[1] != "user" and risky_rule(self.models, self.keyboard, keys, rule[0]):
+                decision.notes.append("rule:ignored")  # learned from one odd case: "z" must not turn "я" into "z"
+                rule = None
             if rule:
                 lang, source = rule
                 decision.reason = "rule"
@@ -388,6 +392,27 @@ class EarlyDecision:
     plausibility: float = 0.0
     alt_plausibility: float = 0.0
     reason: str = ""
+
+
+#: a word this common ("я", "на", "a", "the") is never turned into the other layout by a rule
+#: Switcher learned or Claude suggested: one such rule would wreck it everywhere
+COMMON_WORD_ZIPF = 5.5
+
+
+def risky_rule(models, keyboard: Keyboard, keys: str, lang: str) -> str | None:
+    """Why a layout rule "these keys mean ``lang``" must not be learned or used, or None.
+
+    A single key is a one-letter word in both languages ("z" is "я"); and keys that read as a
+    very common word in the other language would turn that word into gibberish.
+    """
+    if len(keys) < 2:
+        return "one key"
+    away = other(lang)
+    text = "".join(keyboard.layouts[away].char(Stroke(code, False)) for code in keys)
+    zipf = models[away].zipf(text.lower())
+    if zipf is not None and zipf >= COMMON_WORD_ZIPF:
+        return f"«{text}» is a common word"
+    return None
 
 
 def _by_length(values: tuple[float, ...], n: int, first: int) -> float:
