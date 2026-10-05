@@ -878,3 +878,41 @@ def test_a_typo_that_looks_impossible_is_put_back_at_the_end(make_screen):
     s = make_screen(layout=RU)
     s.write("ыегодня ", RU)  # "ыег…" switches early, the whole word is Russian with a typo
     assert s.text == "сегодня "
+
+
+def test_wrong_layout_and_a_typo_together(make_screen):
+    """"j,][zdktybb" reads "объхявлении" in Russian: one key too many — the user meant "объявлении"."""
+    s = make_screen(layout=EN)
+    s.keys("j,][zdktybb ")
+    assert s.text == "объявлении " and s.layout == RU
+    s.double_shift()  # not wanted: exactly what was typed comes back
+    assert s.text == "j,][zdktybb " and s.layout == EN
+
+
+def test_double_shift_fixes_the_typo_too(make_screen):
+    config = Config()
+    config.auto_switch = False  # nothing changes by itself: the user asks with double Shift
+    s = make_screen(config, layout=EN)
+    s.keys("j,][zdktybb ")
+    assert s.text == "j,][zdktybb "
+    s.double_shift()
+    assert s.text == "объявлении " and s.layout == RU
+    s.double_shift()  # and back, to exactly what was typed
+    assert s.text == "j,][zdktybb " and s.layout == EN
+
+
+def test_the_selection_gets_the_layout_and_the_typo_fixed(make_screen):
+    s = make_screen(layout=EN)
+    s.keys("j,][zdktybb")
+    s.selection = "j,][zdktybb"
+    s.controller.convert_selection()
+    assert s.text == "объявлении"
+
+
+def test_words_that_are_no_typos_stay(make_screen):
+    s = make_screen(layout=EN)
+    s.keys("github nginx lol ")
+    assert s.text == "github nginx lol "
+    s = make_screen(layout=RU)
+    s.write("щас ржунимагу ", RU)
+    assert s.text == "щас ржунимагу "

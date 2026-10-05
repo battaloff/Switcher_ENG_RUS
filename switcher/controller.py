@@ -81,6 +81,7 @@ class Token:
     delim: str = ""
     decision: Decision | None = None
     original_text: str = ""
+    typed_before_fix: str | None = None  # converted by hand with a typo fixed: what was typed
     change: str = ""                     # "convert" | "replace" | "fix_case" | "manual" | ""
     group: list["Token"] = field(default_factory=list)  # earlier words converted together (look-back)
     retyped: bool = False
@@ -520,6 +521,8 @@ class Controller:
                                               typed_text=tok.text)
             if can_change:
                 self._apply_decision(tok)
+            if tok.change == "" and can_change:
+                self._apply_wrong_layout_typo(tok)
             if tok.change == "" and can_change and self.config.learning.typo_rules:
                 self._apply_replace_rule(tok)
         if can_change and tok.change in ("", "convert", "fix_quote"):
@@ -740,6 +743,49 @@ class Controller:
         last = self.history[-1]
         return "\n" in last.delim or last.text.rstrip()[-1:] in (".", "!", "?", "…")
 
+    #: the typed reading scores this low or lower: it is no word of its language at all ("j,][zdktybb").
+    #: Measured on frequent and unseen dictionary words typed right: none is converted; of words typed
+    #: in the wrong layout with one typo, 68% come out right instead of 54%.
+    TYPED_GARBAGE = -4.0
+
+    def _typo_in_other_layout(self, d: Decision | None, strokes, typed_lang: str, names: bool = False) -> str | None:
+        """Wrong layout *and* a typo: "j,][zdktybb" reads "объхявлении", one key off "объявлении".
+
+        The whole text in the other layout with the typo fixed, or None.  ``names``: a capital
+        in mid-sentence is allowed (the user asked for this word to be fixed).
+        """
+        if d is None or d.action != "keep" or d.typed is None or d.typed.score > self.TYPED_GARBAGE \
+                or typed_lang not in (EN, RU) or d.reason == "rule":
+            return None
+        target = other(typed_lang)
+        alt = self.keyboard.text(strokes, target)
+        start, end, core = core_of(alt, target)
+        if len(core) < 4 or not core.isalpha() or core[1:] != core[1:].lower():
+            return None
+        if core[0].isupper() and not names and not self._sentence_start():
+            return None  # a name, most likely
+        word = core.lower()
+        if (target, word) in self._spell_keep or (self.config.writes_uzbek and looks_uzbek(word)):
+            return None
+        fix = self.speller.suggest(word, target, eager=True)
+        if fix is None:
+            return None
+        return alt[:start] + match_case(core, fix.word) + alt[end:]
+
+    def _apply_wrong_layout_typo(self, tok: Token) -> None:
+        if not self.config.autocorrect or self._careful() or self._uzbek_phrase(tok):
+            return
+        new = self._typo_in_other_layout(tok.decision, tok.strokes, tok.typed_lang)
+        if new is None:
+            return
+        target = other(tok.typed_lang)
+        old = tok.text + tok.delim
+        tok.original_text, tok.text, tok.lang, tok.change = tok.text, new, target, "convert"
+        self._switch_layout(target)
+        self._rewrite(len(old), new + tok.delim)
+        self.undo_target = tok
+        log.info("wrong layout and a typo: %r → %r", tok.original_text, new)
+
     def _apply_spelling(self, tok: Token) -> None:
         """Autocorrect: "превет" → "привет" once the word is finished."""
         if not self.config.autocorrect or self._careful() or tok.lang not in (EN, RU):
@@ -916,15 +962,29 @@ class Controller:
 
     def _convert_committed(self, tok: Token, target: str, learn: bool) -> tuple[str, str] | None:
         source = tok.lang
-        new = self.keyboard.convert(tok.text, source, target)
+        if not learn and tok.typed_before_fix is not None and tok.typed_lang == target:
+            # back to exactly what was typed: converting the fixed word back would not give it
+            new, tok.typed_before_fix = tok.typed_before_fix, None
+        else:
+            new = self.keyboard.convert(tok.text, source, target)
         if new is None:
             return None
         before = tok.text
+        converted = new
+        strokes = self.keyboard.strokes(tok.text, source) if learn else None
+        if strokes:  # the word may also have a typo: "j,][zdktybb" → "объявлении", not "объхявлении"
+            d = self.engine.decide(strokes, source, self._context(self.history[:-1]), typed_text=tok.text)
+            fixed = self._typo_in_other_layout(d, strokes, source, names=True)
+            if fixed is not None:
+                new, tok.typed_before_fix = fixed, before
         self._switch_layout(target)
         self._rewrite(len(tok.text) + len(tok.delim), new + tok.delim)
         tok.text, tok.lang, tok.change = new, target, "manual"
         if not learn:
             return None
+        if new != converted:
+            log.info("converted by hand with a typo fixed: %r → %r", before, new)
+            return None  # the keys typed were not this word's: nothing to learn about them
         strokes = self.keyboard.strokes(new, target) or []
         margin = tok.decision.margin if tok.decision and tok.decision.reason == "model" else None
         if tok.decision and tok.decision.reason == "rule":
@@ -1045,8 +1105,12 @@ class Controller:
         if not strokes or self._typed_uzbek(word, lang):
             return word, lang
         d = self.engine.decide(strokes, lang, ctx, typed_text=word)
+        fixed_layout = self._typo_in_other_layout(d, strokes, lang, names=True)
         if d.action == "convert" and d.alt is not None and d.alt.source in ("lexicon", "personal", "abbrev"):
             word, lang = d.text, d.target_lang  # never swap into gibberish: "RE;liable" is Claude's job
+        elif fixed_layout is not None:
+            word, lang = fixed_layout, other(lang)  # the other layout with a typo: "j,][zdktybb" → "объявлении"
+            self._selection_unsure = True  # a guess: Claude, if there, has the last word
         elif d.action in ("fix_case", "fix_quote"):
             word = d.text
         start, end, core = core_of(word, lang)
