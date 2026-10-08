@@ -240,3 +240,14 @@ def test_keys_typed_in_an_administrators_program_do_not_make_the_watchdog_reinst
     assert len(asked) < 40  # asked now and then, not on every key
     fired = sum(d.raw_event(lambda: False) for _ in range(10))
     assert fired == 1  # back in an ordinary program and still unseen: the hook did die
+
+
+def test_a_save_dialog_is_known_by_its_title_or_its_button():
+    from switcher.platform.dialogs import is_save_dialog
+
+    assert is_save_dialog("Сохранить как", [])
+    assert is_save_dialog("Export to PDF", ["Cancel"])
+    assert is_save_dialog("CorelDRAW", ["&Сохранить", "Отмена"])  # whatever the program calls the dialog
+    assert is_save_dialog("Выберите место", ["&Save", "Cancel"])
+    assert not is_save_dialog("Открытие", ["&Открыть", "Отмена"])
+    assert not is_save_dialog("Open", ["&Open", "Cancel"])

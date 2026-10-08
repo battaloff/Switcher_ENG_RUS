@@ -13,6 +13,8 @@ import threading
 from ctypes import wintypes
 from typing import Callable
 
+from .dialogs import is_save_dialog
+
 log = logging.getLogger(__name__)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -40,8 +42,12 @@ user32.GetMessageW.restype = wintypes.BOOL
 user32.PostThreadMessageW.argtypes = (wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
-SAVE_WORDS = ("сохран", "save", "экспорт", "export", "зберег")
 SHELL_VIEWS = {"DirectUIHWND", "SHELLDLL_DefView", "DUIViewWndClassName"}
+WM_GETTEXT, SMTO_ABORTIFHUNG = 0x000D, 0x0002
+user32.SendMessageTimeoutW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT,
+                                       wintypes.UINT, ctypes.POINTER(ctypes.c_size_t))
+user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+
 
 
 def _class(hwnd) -> str:
@@ -56,9 +62,36 @@ def _title(hwnd) -> str:
     return buf.value
 
 
+def _text(hwnd) -> str:
+    """A control's text, also in another program; never waits on a program that hangs."""
+    buf = ctypes.create_unicode_buffer(128)
+    result = ctypes.c_size_t()
+    if not user32.SendMessageTimeoutW(hwnd, WM_GETTEXT, 128, ctypes.addressof(buf), SMTO_ABORTIFHUNG, 200,
+                                      ctypes.byref(result)):
+        return ""
+    return buf.value
+
+
+def button_texts(hwnd) -> list[str]:
+    found = []
+
+    def visit(child, _):
+        if _class(child) == "Button":
+            text = _text(child)
+            if text:
+                found.append(text)
+        return len(found) < 30
+
+    user32.EnumChildWindows(hwnd, WNDENUMPROC(visit), 0)
+    return found
+
+
 def looks_like_save(hwnd) -> bool:
-    """A standard dialog titled about saving (its file browser may not be there yet)."""
-    return _class(hwnd) == "#32770" and any(word in _title(hwnd).lower() for word in SAVE_WORDS)
+    """A standard dialog for saving (its file browser may not be there yet)."""
+    if _class(hwnd) != "#32770":
+        return False
+    title = _title(hwnd)
+    return is_save_dialog(title, []) or is_save_dialog(title, button_texts(hwnd))
 
 
 def has_file_browser(hwnd) -> bool:
@@ -134,12 +167,15 @@ class SaveDialogWatcher:
             if looks_like_save(hwnd) and has_file_browser(hwnd):
                 self._pending.discard(hwnd)
                 self._seen = (self._seen + [hwnd])[-20:]  # once per dialog: the user may switch back
-                log.info("a save dialog opened: %r", _title(hwnd))
+                log.info("a save dialog opened: %r, buttons %r", _title(hwnd), button_texts(hwnd)[:6])
                 self._on_save_dialog(hwnd)
             elif tries > 1 and user32.IsWindow(hwnd):
                 threading.Timer(0.3, self._check, args=(hwnd, tries - 1)).start()
             else:
                 self._pending.discard(hwnd)
+                if user32.IsWindow(hwnd) and has_file_browser(hwnd):
+                    # a file dialog not taken for saving: what it says, to see why in the log
+                    log.info("a file dialog, not for saving: %r, buttons %r", _title(hwnd), button_texts(hwnd)[:6])
         except Exception:
             self._pending.discard(hwnd)
             log.exception("save dialog check failed")

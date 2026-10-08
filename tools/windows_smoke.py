@@ -380,6 +380,13 @@ def main() -> int:
     fg = user32.GetForegroundWindow()
     lang = app.backend.current_layout()
     saved = class_name(fg) == "#32770" and lang == EN
+    from switcher.platform.dialogs import is_save_dialog
+    from switcher.platform.win_events import button_texts
+
+    buttons = button_texts(fg) if fg else []
+    by_button = is_save_dialog("", buttons)
+    note("Save As", f"buttons {buttons[:6]}; known by its button alone: {by_button}")
+    results.append(by_button)
     print(f"{'OK  ' if saved else 'FAIL'} Save As switched to English: window {class_name(fg)!r}, "
           f"layout {lang} after {waited:.1f} s; Switcher thinks "
           f"{app.controller.layout}, save dialog in front: {app.backend.in_save_dialog()}")
