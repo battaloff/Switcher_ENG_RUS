@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import winreg
 from pathlib import Path
 
@@ -33,6 +34,14 @@ EXE = APP_DIR / "Switcher.exe"
 CONFIG = Path(os.environ["APPDATA"]) / "Switcher" / "config.json"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F1E6A43-3C4B-4C39-9E0B-5B8C2F6D7A10}_is1"
 OLD = 1_577_836_800  # 2020-01-01: marks the files from the first install
+
+
+def annotate(level: str, text: str) -> None:
+    """On CI, a line readable without the full log (an annotation): "error" or "notice"."""
+    print(text, flush=True)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")[:4000]
+        print(f"::{level} title=Update E2E::{text}", flush=True)
 
 
 def switcher_pids() -> set[int]:
@@ -83,7 +92,8 @@ def update_running_app(setup: Path, pid: int, done) -> float:
             return time.time() - started
         time.sleep(2)
     if log.exists():
-        print("install log:\n  " + "\n  ".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-8:]))
+        annotate("notice", "install log:\n  " + "\n  ".join(
+            log.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]))
     raise SystemExit(f"FAIL: no running Switcher after installing {setup.name} (installed: {installed_version()})")
 
 
@@ -147,7 +157,15 @@ def main() -> int:
         if other is None:
             print("SKIP update/rollback between versions: no other version is published yet")
         else:
+            annotate("notice", f"update and rollback between {__version__} and the published {other.version}")
             between_versions(setup, other)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            annotate("error", f"{exc.code} (installed: {installed_version()}, running: {sorted(switcher_pids())})")
+        raise
+    except Exception as exc:
+        annotate("error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()[-1500:]}")
+        raise
     finally:
         stop_all()
         uninstaller = APP_DIR / "unins000.exe"
