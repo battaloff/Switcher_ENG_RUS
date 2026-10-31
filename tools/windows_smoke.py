@@ -434,18 +434,18 @@ def main() -> int:
         time.sleep(2.0)
 
     layout(EN)
-    select("vfibyf? rfr ltkf")  # not "ghbdtn": the undo above taught to keep that one as typed
+    select("vfibyf? rfr ltkf")
     shift_pause()
-    check("Shift+Pause fixes the selected text", "машина, как дела")
+    check("Shift+Pause swaps the layout of the selected text", "машина, как дела")
+    shift_pause()  # the result is still selected, as in Punto: pressed again, it goes back
+    check("a second Shift+Pause brings the text back", "vfibyf? rfr ltkf")
     select("ыршае=зфгыу")
     shift_pause()
-    check("words joined by \"=\" are fixed one by one", "shift=pause")
+    check("Shift+Pause swaps text with \"=\" in it", "shift=pause")
     layout(EN)
     select("shift+pause")
     shift_pause()
-    check("Shift+Pause leaves right text alone", "shift+pause")
-    shift_pause()
-    check("a second Shift+Pause swaps its layout anyway", "ыршае+зфгыу")
+    check("Shift+Pause swaps right text as well, no questions asked", "ыршае+зфгыу")
 
     # Windows silently removes a hook that once answers too slowly; do the same and expect a recovery
     from pynput._util.win32 import SystemHook

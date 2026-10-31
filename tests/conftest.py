@@ -86,6 +86,9 @@ class FakeScreen:
     def notify(self, message):
         self.notes.append(message)
 
+    def select_back(self, count):
+        self.selection = self.text[-count:] if count else ""
+
     def in_save_dialog(self):
         return self.save_dialog
 

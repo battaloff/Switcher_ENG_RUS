@@ -35,7 +35,8 @@ MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]
 HOTKEY_ACTIONS = ACTIONS
 HOTKEY_HINTS = {
     "convert_last": "Если Switcher ошибся или пропустил слово",
-    "convert_selection": "Раскладка и опечатки; с Claude — точнее",
+    "convert_selection": "Как в Punto: «ghbdtn» ⇄ «привет». Нажмите ещё раз — вернётся как было",
+    "fix_selection": "По словам: раскладка и опечатки; с Claude — точнее",
     "ai_fix": "Claude перепишет фразу в нужной раскладке",
     "toggle": "Выключить и снова включить автоисправление",
 }

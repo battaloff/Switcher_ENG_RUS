@@ -13,7 +13,8 @@ class Hotkeys:
     # "double_shift" / "double_ctrl" = tap the key twice; otherwise pynput syntax, e.g.
     # "<ctrl>+<alt>+x" or "<pause>"; "" = off.  The settings window records them.
     convert_last: str = "double_shift"      # convert the last word / undo the last auto-switch
-    convert_selection: str = "<shift>+<pause>"  # fix the selected text (Claude if connected), like Punto
+    convert_selection: str = "<shift>+<pause>"  # the selected text in the other layout, like Punto
+    fix_selection: str = ""                 # fix the selected text word by word: layout, typos, Claude
     ai_fix: str = "<ctrl>+<alt>+<space>"    # let Claude fix the current phrase or the selection
     toggle: str = "<ctrl>+<alt>+s"          # pause / resume auto-switching
 

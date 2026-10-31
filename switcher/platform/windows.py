@@ -71,6 +71,7 @@ TOKEN_QUERY, TOKEN_ELEVATION = 0x0008, 20
 ERROR_ACCESS_DENIED = 5
 VK_CAPITAL = 0x14
 VK_BACK, VK_TAB, VK_RETURN = 0x08, 0x09, 0x0D
+VK_SHIFT, VK_LEFT = 0x10, 0x25
 # Tag in dwExtraInfo of every key we send.  The hook drops exactly these, so keys
 # the user (or an automated check) types while we are typing are never lost.
 OWN_INPUT = 0x53574348  # "SWCH"
@@ -425,6 +426,18 @@ class WindowsBackend(BaseBackend):
         events = [INPUT(type=INPUT.KEYBOARD, value=INPUT_union(ki=KEYBDINPUT(
             wVk=vk, wScan=scan, dwFlags=flags, dwExtraInfo=OWN_INPUT))) for vk, scan, flags in keys]
         SendInput(len(events), ctypes.byref((INPUT * len(events))(*events)), ctypes.sizeof(INPUT))
+
+    def select_back(self, count: int) -> None:
+        """Shift+Left ``count`` times in one batch, tagged as ours (the hook ignores it)."""
+        from pynput._util.win32 import KEYBDINPUT
+
+        if not 0 < count <= self.MAX_RESELECT:
+            return
+        extended = 0x0001  # KEYEVENTF_EXTENDEDKEY: the arrow keys, not the numpad's
+        keys = [(VK_SHIFT, 0, 0)]
+        keys += [(VK_LEFT, 0, flags) for _ in range(count) for flags in (extended, extended | KEYBDINPUT.KEYUP)]
+        keys.append((VK_SHIFT, 0, KEYBDINPUT.KEYUP))
+        self._send(keys)
 
     def backspace(self, count: int) -> None:
         from pynput._util.win32 import KEYBDINPUT

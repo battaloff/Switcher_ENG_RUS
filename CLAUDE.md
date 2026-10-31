@@ -23,7 +23,7 @@ pip install -e ".[gui,dev]"                  # gui = customtkinter, pystray, pil
 python -m pytest -q                          # all tests (GUI tests skip without tkinter/a display)
 xvfb-run -a python -m pytest -q              # include the GUI tests on Linux
 python -m pytest tests/test_controller.py -k two_capitals   # one test / a few
-ruff check .                                 # 12 pre-existing findings (E741, F401 in tray.py): don't add more
+ruff check .                                 # has pre-existing findings (how many depends on the ruff version): add none
 python -m switcher explain ghbdtn            # how the engine scores a word and why it converts or not
 xvfb-run -a -s "-screen 0 1280x900x24" python tools/gui_screenshots.py OUT_DIR   # every settings page, light+dark
 ```
@@ -75,8 +75,9 @@ then two-capitals / Caps Lock fixes and `Speller.suggest` (`speller.py`, one-edi
 keyboard-aware costs). `decide_prefix` does the Punto-style early switch while typing. Look-back
 converts short previous words together with the current one. Every change the controller makes
 records what was typed, so double Shift (`convert_last`) restores exactly the original.
-`convert_selection` (Shift+Pause) fixes selected text word by word and hands what it cannot fix to
-Claude (`ai.py`).
+`convert_selection` (Shift+Pause) only swaps the layout of the selection, as Punto does, and keeps
+it selected; `fix_selection` (own hotkey, unassigned by default) fixes it word by word and hands
+what it cannot fix to Claude (`ai.py`).
 
 **Learning.** `learner.py` turns undos, manual conversions and retypes into layout rules, typo
 rules, personal vocabulary and per-app threshold offsets, all in a local SQLite profile.

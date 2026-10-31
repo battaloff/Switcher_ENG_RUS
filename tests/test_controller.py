@@ -204,6 +204,26 @@ def test_selection_is_converted(make_screen):
     s.controller.convert_selection()
     assert s.text == "Привет, как дела"
     assert s.layout == RU
+    assert s.selection == "Привет, как дела"  # still selected, as in Punto
+    s.controller.convert_selection()  # pressed again: back as it was
+    assert s.text == "Ghbdtn? rfr ltkf" and s.layout == EN
+
+
+def test_shift_pause_only_swaps_the_layout_like_punto(make_screen):
+    ai = FakeAI("не понадобится")
+    s = make_screen(layout=EN, ai=ai)
+    s.text = s.selection = "shift+pause"  # right as it is: swapped anyway, no questions asked
+    s.controller.convert_selection()
+    assert s.text == "ыршае+зфгыу"
+    s.text = s.selection = "ghbdtnn rfr ltkf"  # a typo stays a typo: only the layout changes
+    s.controller.convert_selection()
+    assert s.text == "приветт как дела"
+    s.text = s.selection = "RE;liable"
+    s.controller.convert_selection()
+    assert s.text == "КУждшфиду" and ai.calls == []  # never Claude
+    s.text = s.selection = "12 345"
+    s.controller.convert_selection()
+    assert s.text == "12 345"
 
 
 class FakeAI:
@@ -447,7 +467,7 @@ def test_double_shift_mid_word_takes_back_the_words_switched_along(make_screen):
     assert s.text == "e vtyz" and s.layout == EN
 
 
-# -- fixing the selection (Shift+Pause) -------------------------------------------
+# -- fixing the selection word by word (its own hotkey) -------------------------------------------
 
 
 def select(s, text):
@@ -458,17 +478,17 @@ def select(s, text):
 def test_right_text_is_left_alone_and_a_second_press_swaps_it(make_screen):
     s = make_screen(layout=EN)
     select(s, "shift+pause")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "shift+pause" and "выглядит правильно" in s.notes[-1]
     s.selection = "shift+pause"  # still selected, pressed again: the user insists
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "ыршае+зфгыу" and s.layout == RU
 
 
 def test_only_wrong_words_change_and_typos_are_fixed(make_screen):
     s = make_screen(layout=EN)
     select(s, "hello ghbdtn? rfr ltkf? превет")  # "?" on the EN layout is the Russian ","
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "hello привет, как дела, привет"
 
 
@@ -476,7 +496,7 @@ def test_claude_fixes_the_selection_with_typos_allowed(make_screen):
     ai = FakeAI("Reliable")
     s = make_screen(layout=EN, ai=ai)
     select(s, "RE;liable")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "Reliable"
     assert ai.typos is True
     assert ai.calls[0] == [{"screen": "RE;liable", "en": "RE;liable", "ru": "КУждшфиду", "delim": ""}]
@@ -485,7 +505,7 @@ def test_claude_fixes_the_selection_with_typos_allowed(make_screen):
 def test_without_claude_the_selection_is_still_fixed_locally(make_screen):
     s = make_screen(layout=EN, ai=FakeAI(RuntimeError("нет сети")))
     select(s, "Ghbdtn? rfr ltkf RE;liable")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "Привет, как дела RE;liable"
     assert "без него" in s.notes[-1]
 
@@ -494,10 +514,10 @@ def test_what_switcher_knows_is_fixed_at_once_without_claude(make_screen):
     ai = FakeAI("должен не понадобиться")
     s = make_screen(layout=EN, ai=ai)
     select(s, "Ghbdtn? rfr ltkf")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "Привет, как дела"
     select(s, "shift+pause")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "shift+pause" and "выглядит правильно" in s.notes[-1]
     assert ai.calls == []
 
@@ -505,10 +525,10 @@ def test_what_switcher_knows_is_fixed_at_once_without_claude(make_screen):
 def test_words_joined_by_keys_both_layouts_share_are_fixed_one_by_one(make_screen):
     s = make_screen(layout=RU, ai=FakeAI("должен не понадобиться"))
     select(s, "ыршае=зфгыу")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "shift=pause" and s.layout == EN
     select(s, "ыршае+зфгыу")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "shift+pause"
 
 
@@ -523,7 +543,7 @@ def test_the_claude_hotkey_always_asks_claude(make_screen):
 def test_unknown_text_without_claude_says_so(make_screen):
     s = make_screen(layout=EN)
     select(s, "RE;liable")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "RE;liable" and "Не знаю" in s.notes[-1]
 
 
@@ -580,7 +600,7 @@ def test_two_capitals_in_the_selection(make_screen):
     ai = FakeAI("не понадобится")
     s = make_screen(layout=EN, ai=ai)
     select(s, "ЗДравствуйте ПРивет")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "Здравствуйте Привет" and ai.calls == []
 
 
@@ -633,11 +653,11 @@ def test_uzbek_selection_is_left_alone_and_claude_is_told(make_screen):
     ai = FakeAI("не понадобится")
     s = make_screen(uzbek_config(), layout=EN, ai=ai)
     select(s, "олдин улар жуда")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "олдин улар жуда" and ai.calls == []
     ai.answer = "Reliable"
     select(s, "RE;liable")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "Reliable" and ai.uzbek is True
 
 
@@ -680,7 +700,7 @@ def test_a_long_word_with_an_extra_letter_is_fixed(make_screen):
     assert s.text == "отреагировали "  # was left: 3.4 - 1.0 - 1.5 came out 0.8999… against 0.9
     s = make_screen(layout=EN, ai=FakeAI("не понадобится"))
     select(s, "отреагироваоли")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "отреагировали" and s.controller.ai.calls == []
 
 
@@ -690,12 +710,12 @@ def test_the_selection_fix_is_bolder_than_autocorrect(make_screen):
     assert s.text == "дорошка "  # typing: not sure enough to change it unasked
     s = make_screen(layout=EN)  # no Claude: the bolder guess is pasted
     select(s, "дорошка")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "дорожка"
     ai = FakeAI("дорожка")
     s = make_screen(layout=EN, ai=ai)  # with Claude: Claude checks the bolder guess
     select(s, "дорошка")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "дорожка" and len(ai.calls) == 1
 
 
@@ -704,7 +724,7 @@ def test_typos_in_the_selection_are_fixed_even_with_autocorrect_off(make_screen)
     config.autocorrect = False
     s = make_screen(config, layout=EN)
     select(s, "превет")
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "привет"
 
 
@@ -905,7 +925,7 @@ def test_the_selection_gets_the_layout_and_the_typo_fixed(make_screen):
     s = make_screen(layout=EN)
     s.keys("j,][zdktybb")
     s.selection = "j,][zdktybb"
-    s.controller.convert_selection()
+    s.controller.fix_selection()
     assert s.text == "объявлении"
 
 

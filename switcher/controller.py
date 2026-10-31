@@ -914,7 +914,7 @@ class Controller:
 
     # actions that copy, paste or retype: with Shift/Ctrl still held the app would get Ctrl+Shift+C
     # (DevTools in a browser) or Ctrl+Backspace, so they wait until the modifiers are released
-    WAIT_FOR_RELEASE = {"convert_selection", "ai_fix"}
+    WAIT_FOR_RELEASE = {"convert_selection", "fix_selection", "ai_fix"}
 
     def run_hotkey(self, name: str) -> None:
         if name in self.WAIT_FOR_RELEASE and self.mods:
@@ -932,6 +932,8 @@ class Controller:
             self.convert_last()
         elif name == "convert_selection":
             self.convert_selection()
+        elif name == "fix_selection":
+            self.fix_selection()
         elif name == "ai_fix":
             self.ai_fix()
 
@@ -1047,7 +1049,24 @@ class Controller:
             _, _, fixed = core_of(converted_text, converted_lang)
             self.learner.case_undone(app=self.app, typed=typed, fixed=fixed, lang=tok.lang)
 
-    def convert_selection(self, ask_claude: bool = False) -> None:
+    def convert_selection(self) -> None:
+        """Shift+Pause, as in Punto: the selected text in the other layout ("ghbdtn" ⇄ "привет"), nothing else.
+
+        The result stays selected, so pressing again brings back what was there.
+        """
+        text = self.backend.copy_selection()
+        if not text:
+            return
+        converted, target = self._swap_layout(text)
+        if converted == text:  # nothing with a layout in it: digits, spaces
+            self.backend.restore_clipboard()
+            return
+        self._paste_selection(text, converted, target, "selection_swap")
+        select_back = getattr(self.backend, "select_back", None)
+        if select_back is not None:
+            select_back(len(converted.replace("\r\n", "\n")))
+
+    def fix_selection(self, ask_claude: bool = False) -> None:
         """Fix the selected text word by word (layout and typos); what that cannot fix goes to Claude.
 
         Only text with words Switcher does not know waits for Claude: the rest is instant.  Text
@@ -1195,7 +1214,7 @@ class Controller:
         if tokens:
             self._ai_fix_phrase(tokens)
         else:
-            self.convert_selection(ask_claude=True)  # asked for Claude by name: no local shortcut
+            self.fix_selection(ask_claude=True)  # asked for Claude by name: no local shortcut
 
     def _ai_fix_phrase(self, tokens: list[Token]) -> None:
         pieces = []

@@ -24,7 +24,8 @@ MODIFIER_ORDER = ("ctrl", "alt", "shift", "cmd")
 # Switcher's hotkeys: setting name → what it does (the settings window and the AutoHotkey check)
 ACTIONS = (
     ("convert_last", "Исправить / отменить последнее слово"),
-    ("convert_selection", "Исправить выделенный текст"),
+    ("convert_selection", "Сменить раскладку выделенного"),
+    ("fix_selection", "Исправить выделенный текст"),
     ("ai_fix", "Исправить фразу с Claude"),
     ("toggle", "Пауза"),
 )

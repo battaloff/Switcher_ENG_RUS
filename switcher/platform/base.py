@@ -335,6 +335,21 @@ class BaseBackend:
         except Exception:
             log.debug("clipboard restore failed", exc_info=True)
 
+    MAX_RESELECT = 2000  # characters: selecting more one key at a time takes too long
+
+    def select_back(self, count: int) -> None:
+        """Select the ``count`` characters just pasted, so the same hotkey can swap them back."""
+        if not 0 < count <= self.MAX_RESELECT:
+            return
+        self._busy()
+        try:
+            with self._out.pressed(self._pk.Key.shift):
+                for _ in range(count):
+                    self._out.press(self._pk.Key.left)
+                    self._out.release(self._pk.Key.left)
+        finally:
+            self._settle()
+
     def paste_text(self, text: str) -> None:
         try:
             import pyperclip
