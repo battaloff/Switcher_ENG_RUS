@@ -50,11 +50,17 @@ builds the installer, runs every check on windows-latest and publishes the GitHu
 version that never got published is folded into the next CHANGELOG section. Pushes without a new
 version are only built and tested.
 
+The repository must stay **public**: the app (and the update E2E) download `releases.json` and the
+installer anonymously, so a private repository answers 404 and in-app updates stop working. If the
+update E2E fails with «GitHub ответил ошибкой 404», check the repository's visibility first and ask
+the user to make it public; never change it yourself.
+
 Reading CI from a cloud session: job logs are not downloadable (blob redirect), so failures are
 surfaced as annotations — `tests/conftest.py` writes one per failed test, `windows_smoke.py` turns
 every `FAIL` line into an error and `note()` into a notice. Read them with
 `gh api repos/battaloff/Switcher_ENG_RUS/check-runs/<job id>/annotations` (job id from
-`actions/runs/<run id>/jobs`). Cancelling a workflow run from here was refused (403): don't count on it.
+`actions/runs/<run id>/jobs`). Cancelling, re-running and manually starting (`workflow_dispatch`)
+a workflow run from here are all refused (403): only a push starts CI.
 
 ## Architecture
 
