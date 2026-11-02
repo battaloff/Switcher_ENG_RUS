@@ -124,6 +124,20 @@ snippets; `ahk_hotkeys.py` relabels and adds hotkeys for the «Клавиши AH
 Modules imported only on demand must also be imported in `gui_main.selftest` so a missing one fails
 the build, not the user.
 
+## Scripts for the user's own work (not part of Switcher)
+
+The user also asks for small scripts for their print shop (AutoHotkey, cmd). Hand them over as
+files (`SendUserFile`), don't commit them. Their work files are on `\\192.168.1.41\f\` (the owner's
+PC sees the same share as `F:\`); a cloud session can't reach that network, so ask for a listing.
+
+- **.cmd/.bat: English letters only.** cmd misreads Russian letters in a batch file on the user's
+  PCs (`chcp 65001` doesn't fix it reliably). Put Russian paths and messages in PowerShell: either
+  an ASCII cmd header that runs the rest of its own file (`set "SELF=%~f0"`, then
+  `[IO.File]::ReadAllText($env:SELF, [Text.Encoding]::UTF8)` → `Invoke-Expression` from a marker
+  on, `exit /b` before the marker), or a separate `.ps1` saved as UTF-8 with BOM. Save the cmd as
+  UTF-8 without BOM, CRLF; a lone `%` in the cmd part is eaten (write `%%`).
+- AutoHotkey: UTF-8 with BOM (v1 misreads Russian without it); the user's scripts are v1.
+
 ## Testing conventions
 
 `tests/conftest.py`'s `FakeScreen` is a text field plus a simulated user wired to a real
