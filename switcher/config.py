@@ -43,6 +43,24 @@ class Updates:
     check_automatically: bool = True   # look for a new version on GitHub twice a day
 
 
+def _save_bar_buttons() -> list[dict]:
+    from .savebar import default_buttons
+
+    return default_buttons()
+
+
+@dataclass
+class SaveBar:
+    """The «Сохранить как» panel: buttons in file-save dialogs that copy the folder's name."""
+    enabled: bool = True
+    # {"label", "prefix", "suffix", "hotkey", "enabled"}; the first one is the main (yellow) button
+    buttons: list[dict] = field(default_factory=_save_bar_buttons)
+    place: str = "inside"              # "inside": next to «Новая папка»; "above": over the dialog
+    make_pdf_folder: bool = True       # a click also creates "PDF" in the folder and opens it
+    tooltips: bool = False             # what a button copies, when the mouse is over it
+    notifications: bool = False        # "Скопировано: …" after a click (errors are always shown)
+
+
 @dataclass
 class Config:
     enabled: bool = True
@@ -79,7 +97,8 @@ class Config:
     learning: Learning = field(default_factory=Learning)
     ai: AI = field(default_factory=AI)
     updates: Updates = field(default_factory=Updates)
-    config_version: int = 1            # bumped when an update has to adjust saved settings
+    save_bar: SaveBar = field(default_factory=SaveBar)
+    config_version: int = 1           # bumped when an update has to adjust saved settings
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

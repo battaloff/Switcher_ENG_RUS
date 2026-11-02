@@ -496,3 +496,170 @@ def test_autohotkey_hotkeys_are_listed_reassigned_and_added(profile, keyboard, m
                 editor.destroy()
         window.destroy()
         ROOT.update()
+
+
+# -- the «Сохранить как» panel ---------------------------------------------------------------------
+
+class FakeDialogs:
+    """The Windows side of the panel: one save dialog, a folder in it, the clipboard."""
+
+    def __init__(self):
+        from switcher.savebar import Geometry
+
+        self.front = 0
+        self.dialogs = {77: Geometry((100, 100, 1500, 900), (108, 160, 1492, 196), 330, 1.0, "#191919")}
+        self.folders = {77: (r"\\srv\f\2026\НОЯБРЬ\2,11,26\готов\Заказ   (id_1)", "Заказ   (id_1)")}
+        self.copied, self.made, self.went, self.shown = [], [], [], {}
+        self.fail = None
+
+    def foreground(self):
+        return self.front
+
+    def is_save_dialog(self, hwnd):
+        return hwnd in self.dialogs
+
+    def alive(self, hwnd):
+        return True
+
+    def geometry(self, hwnd):
+        return self.dialogs.get(hwnd)
+
+    def dialog_rect(self, hwnd):
+        return self.dialogs[hwnd].dialog if hwnd in self.dialogs else None
+
+    def folder(self, hwnd):
+        return self.folders.get(hwnd)
+
+    def make_folder(self, path):
+        if self.fail:
+            raise self.fail
+        self.made.append(path)
+
+    def go_into(self, hwnd, folder):
+        import ntpath
+
+        self.went.append(folder)
+        self.folders[hwnd] = (folder, ntpath.basename(folder))
+        return True
+
+    def copy(self, text):
+        self.copied.append(text)
+
+    def prepare(self, window):
+        window.update_idletasks()
+        return window.winfo_id()
+
+    def show(self, hwnd, x, y):
+        self.shown[hwnd] = (x, y)
+
+    def hide(self, hwnd):
+        self.shown.pop(hwnd, None)
+
+    def visible(self, hwnd):
+        return hwnd in self.shown
+
+    def focus(self, hwnd):
+        self.front = hwnd
+
+
+class BarApp:
+    def __init__(self):
+        self.config = Config()
+        self.stop_event = threading.Event()
+        self.notes = []
+        self.backend = type("Backend", (), {})()
+        self.backend.notify = self.notes.append
+
+
+@pytest.fixture
+def bar():
+    from switcher.savebar_ui import SaveBarPanel
+
+    app, dialogs = BarApp(), FakeDialogs()
+    panel = SaveBarPanel(ROOT, app, system=dialogs)
+    panel.app_, panel.dialogs = app, dialogs
+    yield panel
+    panel.hide()
+    if panel.window is not None:
+        panel.window.destroy()
+    ROOT.update()
+
+
+def test_the_panel_shows_on_a_save_dialog_only(bar):
+    dialogs, app = bar.dialogs, bar.app_
+    bar.update()
+    assert not dialogs.shown and bar.dialog == 0  # nothing in front
+    dialogs.front = 77
+    bar.update()
+    assert bar.dialog == 77 and bar.where == "inside" and dialogs.shown[bar.hwnd][0] == 330
+    assert [b.label for b in bar.buttons] == ["Копировать имя папки", "PANCH", "PANCH + ЗАГИБ", "ОБЖИГ"]
+    assert app.backend.save_bar_dialog == 77
+    assert app.backend.save_bar_keys[(frozenset({"ctrl", "shift"}), 0x32)] == 1
+    dialogs.front = 5  # another window: an «Открыть» dialog, a message box over the dialog, another program
+    bar.update()
+    assert not dialogs.shown and app.backend.save_bar_dialog == 0
+    dialogs.front = 77
+    app.config.save_bar.enabled = False
+    bar.update()
+    assert not dialogs.shown
+    app.config.save_bar.enabled = True
+    app.config.save_bar.place = "above"
+    bar.update()
+    assert bar.where == "above" and dialogs.shown[bar.hwnd][1] < 100
+    app.config.save_bar.place = "inside"
+    moved = dialogs.dialogs[77]
+    dialogs.dialogs[77] = type(moved)((150, 120, 1550, 920), (158, 180, 1542, 216), 380, 1.0, "#191919")
+    bar.update()  # the dialog was dragged: the panel follows at once
+    assert dialogs.shown[bar.hwnd][0] == 380
+
+
+def test_a_button_copies_the_folder_name_and_opens_pdf(bar):
+    dialogs, app = bar.dialogs, bar.app_
+    dialogs.front = 77
+    bar.update()
+    order = dialogs.folders[77][0]
+    assert bar.run(bar.buttons[0], 77) == "Заказ   (id_1)"
+    assert dialogs.made == [order + "\\PDF"] and dialogs.went == [order + "\\PDF"]
+    assert bar.run(bar.buttons[1], 77) == "Заказ   (id_1) PANCH"  # now in "PDF": the order's name, no PDF\PDF
+    assert dialogs.made == [order + "\\PDF"] and dialogs.copied == ["Заказ   (id_1)", "Заказ   (id_1) PANCH"]
+    assert app.notes == []  # notifications are off by default
+    app.config.save_bar.notifications = True
+    bar.run(bar.buttons[3], 77)
+    assert app.notes == ["Скопировано: Заказ   (id_1) ОБЖИГ"]
+
+
+def test_errors_are_told_even_with_notifications_off(bar):
+    from switcher.savebar import Button
+
+    dialogs, app = bar.dialogs, bar.app_
+    dialogs.fail = PermissionError(13, "Access denied")
+    assert bar.run(Button("Копировать имя папки"), 77) == "Заказ   (id_1)"  # copied all the same
+    assert dialogs.copied == ["Заказ   (id_1)"] and "Нет прав создать папку «PDF»" in app.notes[-1]
+    dialogs.folders[77] = None  # «Этот компьютер»: no folder on a disk
+    assert bar.run(Button("Копировать имя папки"), 77) is None
+    assert "Не понял, какая папка" in app.notes[-1]
+
+
+def test_the_save_bar_page(window):
+    from switcher.savebar import Button
+
+    window.show("savebar")
+    ROOT.update()
+    assert len(window.save_button_tree.get_children()) == 4
+    window.var_bar_tips.set(True)
+    window.bar_place.set(gui.SAVE_BAR_PLACES["above"])
+    window.save()
+    saved = window.app.saved[-1].save_bar
+    assert saved.tooltips and saved.place == "above" and saved.enabled
+    assert window.put_save_button(None, Button("Мой", suffix=" X", hotkey="<ctrl>+<shift>+2")) == (
+        "Ctrl + Shift + 2 уже у кнопки «PANCH».")
+    assert window.put_save_button(None, Button("Мой", suffix=" X", hotkey="<ctrl>+<shift>+9")) is None
+    assert window.app.saved[-1].save_bar.buttons[-1]["label"] == "Мой"  # at once, without «Сохранить»
+    window.save_button_tree.selection_set("4")
+    window.move_save_button(-1)
+    window.toggle_save_button()
+    labels = [b["label"] for b in window.app.saved[-1].save_bar.buttons]
+    assert labels == ["Копировать имя папки", "PANCH", "PANCH + ЗАГИБ", "Мой", "ОБЖИГ"]
+    assert window.app.saved[-1].save_bar.buttons[3]["enabled"] is False
+    window.remove_save_button()
+    assert len(window.app.saved[-1].save_bar.buttons) == 4

@@ -72,6 +72,7 @@ ERROR_ACCESS_DENIED = 5
 VK_CAPITAL = 0x14
 VK_BACK, VK_TAB, VK_RETURN = 0x08, 0x09, 0x0D
 VK_SHIFT, VK_LEFT = 0x10, 0x25
+VK_MASK = 0xE8  # unassigned: a key no program reacts to
 # Tag in dwExtraInfo of every key we send.  The hook drops exactly these, so keys
 # the user (or an automated check) types while we are typing are never lost.
 OWN_INPUT = 0x53574348  # "SWCH"
@@ -150,6 +151,12 @@ class WindowsBackend(BaseBackend):
             self._self_elevated = None
         self._elevated_pids: dict[int, bool] = {}
         self.elevated_apps: list[str] = []  # programs Windows keeps Switcher out of
+        # the «Сохранить как» panel (savebar_ui.py): its hotkeys work only in the dialog it is on,
+        # and the dialog never gets them (Ctrl+Shift+1 would change its view)
+        self.save_bar_dialog = 0
+        self.save_bar_keys: dict[tuple[frozenset, int], int] = {}
+        self.save_bar_press = None
+        self._save_bar_held: set[int] = set()
         self._refresh_layouts()
 
     def _refresh_layouts(self) -> None:
@@ -308,9 +315,51 @@ class WindowsBackend(BaseBackend):
                 self._foreign = True
                 self._foreign_input()
             return False
+        if (self.save_bar_dialog or self._save_bar_held) and self._save_bar_key(down, data.vkCode):
+            listener = self._listeners[0] if self._listeners else None
+            if listener is not None:
+                listener.suppress_event()  # raises: the key goes nowhere else
+            return False
         if down:
             self._foreign = False
         return True
+
+    def _save_bar_key(self, down: bool, vk: int) -> bool:
+        """A hotkey of the «Сохранить как» panel (runs it); True: keep the key from everyone else.
+        Never raises: an error in the hook would stop the keyboard listener."""
+        try:
+            if not down:
+                if vk in self._save_bar_held:
+                    self._save_bar_held.discard(vk)
+                    return True
+                return False
+            keys = self.save_bar_keys
+            if not any(code == vk for _, code in keys) or int(user32.GetForegroundWindow() or 0) != self.save_bar_dialog:
+                return False
+            index = keys.get((self._held_mods(), vk))
+            if index is None:
+                return False
+            if vk not in self._save_bar_held:  # not again while the key repeats
+                self._save_bar_held.add(vk)
+                press = self.save_bar_press
+                if press is not None:
+                    press(index)
+                threading.Thread(target=self._mask_modifiers, name="switcher-mask", daemon=True).start()
+            return True
+        except Exception:
+            log.exception("save bar hotkey failed")
+            return False
+
+    def _mask_modifiers(self) -> None:
+        """A key nobody uses (like AutoHotkey's menu mask key): without it, Ctrl+Shift or Alt+Shift
+        pressed and released with the swallowed key in between would switch the layout, and Alt would
+        open the program's menu."""
+        from pynput._util.win32 import KEYBDINPUT
+
+        try:
+            self._send([(VK_MASK, 0, 0), (VK_MASK, 0, KEYBDINPUT.KEYUP)])
+        except Exception:
+            log.debug("could not send the mask key", exc_info=True)
 
     def _foreign_input(self) -> None:
         from ..controller import KeyEvent

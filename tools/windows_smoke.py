@@ -133,6 +133,110 @@ def bring_to_front(hwnd) -> bool:
     return user32.GetForegroundWindow() == hwnd
 
 
+def check_save_bar(app, dialog, user, Key, KeyCode, results):
+    """The «Сохранить как» panel on a real Save As dialog: shown inside it without taking the focus,
+    Ctrl+Shift+1 copies the order's name and opens its "PDF" folder, the typed file name stays."""
+    import tkinter as tk
+
+    import pyperclip
+
+    from switcher.platform import win_savebar
+    from switcher.savebar_ui import SaveBarPanel
+
+    Parts, get_text, color_at = win_savebar.Parts, win_savebar.get_text, win_savebar.color_at
+    dialogs = win_savebar.WindowsSaveDialogs()
+    order = Path(os.environ["SWITCHER_HOME"]) / "заказы" / "ayk для s.raximov   (id_57306)"
+    order.mkdir(parents=True, exist_ok=True)
+    pdf = order / "PDF"
+
+    def same(a, b) -> bool:
+        return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+
+    def file_name() -> str | None:
+        edit = Parts(dialog).file_edit
+        return get_text(edit) if edit else None
+
+    typed = file_name()
+    note("Save bar", f"address {get_text(Parts(dialog).address) if Parts(dialog).address else None!r}; "
+                     f"file name {typed!r}")
+    moved = dialogs.go_into(dialog, str(order))
+    folder = dialogs.folder(dialog)
+    kept = file_name()
+    ok = moved and folder is not None and same(folder[0], order) and kept == typed and bool(typed)
+    print(f"{'OK  ' if ok else 'FAIL'} the save dialog opens a folder and keeps the file name: moved {moved}, "
+          f"folder {folder!r}, name {typed!r} → {kept!r}")
+    results.append(ok)
+
+    box: dict = {}
+
+    def run_panel():
+        root = tk.Tk()
+        root.withdraw()
+        box["panel"] = SaveBarPanel(root, app)
+        box["panel"].start()
+        root.mainloop()
+
+    threading.Thread(target=run_panel, name="save-bar-check", daemon=True).start()
+    deadline = time.time() + 10
+    while time.time() < deadline and not (box.get("panel") and box["panel"].dialog == dialog
+                                          and box["panel"].position):
+        time.sleep(0.1)
+    panel = box.get("panel")
+    geometry = dialogs.geometry(dialog)
+    shown = panel is not None and panel.dialog == dialog and dialogs.visible(panel.hwnd)
+    front = user32.GetForegroundWindow()
+    note("Save bar", f"dialog {geometry.dialog if geometry else None}, row {geometry.row if geometry else None}, "
+                     f"after {geometry.after_x if geometry else None}, scale {geometry.scale if geometry else None}, "
+                     f"colour {geometry.color if geometry else None}; panel at {panel.position if panel else None}, "
+                     f"size {panel.size if panel else None}, {panel.where if panel else '-'}")
+    ok = shown and front == dialog
+    print(f"{'OK  ' if ok else 'FAIL'} the panel shows on the save dialog ({panel.where if panel else '-'}) and the "
+          f"dialog keeps the focus (in front: {class_name(front) if front else None!r})")
+    results.append(ok)
+    if shown:
+        time.sleep(0.5)
+        x, y = panel.position[0] + 10, panel.position[1] + panel.size[1] // 2
+        color = color_at(x, y)
+        yellow = bool(color) and int(color[1:3], 16) > 200 and int(color[3:5], 16) > 150 and int(color[5:7], 16) < 120
+        print(f"{'OK  ' if yellow else 'FAIL'} the panel is drawn: {color} at its main (yellow) button")
+        results.append(yellow)
+        inside = panel.where == "inside" and geometry is not None and geometry.row is not None and \
+            geometry.row[1] <= panel.position[1] and panel.position[1] + panel.size[1] <= geometry.row[3]
+        print(f"{'OK  ' if inside else 'FAIL'} the panel sits in the row of «Новая папка»")
+        results.append(inside)
+
+    def hotkey(digit: str) -> None:
+        user.press(Key.ctrl)
+        user.press(Key.shift)
+        user.press(KeyCode.from_vk(0x30 + int(digit)))
+        user.release(KeyCode.from_vk(0x30 + int(digit)))
+        user.release(Key.shift)
+        user.release(Key.ctrl)
+
+    pyperclip.copy("")
+    hotkey("1")
+    deadline = time.time() + 6
+    while time.time() < deadline and not ((now := dialogs.folder(dialog)) and same(now[0], pdf)):
+        time.sleep(0.1)
+    time.sleep(0.3)
+    copied, now, kept = pyperclip.paste(), dialogs.folder(dialog), file_name()
+    ok = copied == order.name and pdf.is_dir() and now is not None and same(now[0], pdf) and kept == typed
+    print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+1 copies the folder's name and opens «PDF»: copied {copied!r}, "
+          f"PDF made {pdf.is_dir()}, dialog in {now!r}, file name {kept!r}")
+    results.append(ok)
+    pyperclip.copy("")
+    hotkey("2")
+    deadline = time.time() + 3
+    while time.time() < deadline and pyperclip.paste() == "":
+        time.sleep(0.1)
+    copied = pyperclip.paste()
+    ok = copied == order.name + " PANCH" and not (pdf / "PDF").exists()
+    print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+2 inside «PDF»: copied {copied!r}, no PDF inside PDF: "
+          f"{not (pdf / 'PDF').exists()}")
+    results.append(ok)
+    return panel
+
+
 def main() -> int:
     for klid in ("00000409", "00000419"):  # make sure both layouts are loaded
         user32.LoadKeyboardLayoutW(klid, 0)
@@ -403,8 +507,23 @@ def main() -> int:
     named = buf.value == "015-510-400_4_"
     print(f"{'OK  ' if named else 'FAIL'} a snippet in the file name field: {buf.value!r}")
     results.append(named)
+    panel = None
+    try:
+        panel = check_save_bar(app, fg, user, Key, KeyCode, results)
+    except Exception as exc:  # noqa: BLE001  (any failure here is a failed check, not the end of the run)
+        import traceback
+
+        print(f"FAIL the «Сохранить как» panel: {exc!r}\n{traceback.format_exc()}")
+        results.append(False)
     tap(Key.esc)
     time.sleep(1)
+    if panel is not None:
+        deadline = time.time() + 3
+        while time.time() < deadline and (panel.dialog or panel.system.visible(panel.hwnd)):
+            time.sleep(0.1)
+        gone = not panel.dialog and not panel.system.visible(panel.hwnd)
+        print(f"{'OK  ' if gone else 'FAIL'} the panel goes away with the dialog")
+        results.append(gone)
 
 
     clear()

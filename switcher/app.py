@@ -181,6 +181,12 @@ class App:
                      f"Claude {'подключён' if self.ai_ready() else 'не подключён'}")
         lines.append(f"Дописывание: шаблонов {len(self.config.snippets)}; английская раскладка при сохранении "
                      f"файла {'вкл' if self.config.english_in_save_dialogs else 'выкл'}")
+        if sys.platform == "win32":
+            from .savebar import shown_buttons
+
+            bar = self.config.save_bar
+            lines.append(f"Панель «Сохранить как»: {'вкл' if bar.enabled else 'выкл'}, кнопок {len(shown_buttons(bar))}"
+                         f", создавать «PDF» {'да' if bar.make_pdf_folder else 'нет'}")
         if getattr(b, "_self_elevated", False):
             lines.append("Switcher запущен от имени администратора")
         elevated = getattr(b, "elevated_apps", [])
@@ -363,6 +369,9 @@ class App:
         worker = self.start()
         ui = Ui(self)
         tray = Tray(self, ui)
+        from .savebar_ui import start_save_bar
+
+        self.save_bar = start_save_bar(ui.root, self)  # Windows: buttons in «Сохранить как» dialogs
         try:
             tray.start()
             if self.profile.get_meta("update_to"):

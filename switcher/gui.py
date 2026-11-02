@@ -28,6 +28,7 @@ from .hotkeys import problem as hotkey_problem
 from .layouts import EN, RU, canonical_keys, text_lang
 from .paths import data_dir
 from .report import rule_rows, stats_text
+from .savebar import Button, buttons_of
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ HOTKEY_HINTS = {
 HOTKEY_HELP = ("Подойдёт Ctrl или Alt с любой клавишей, Shift или Ctrl дважды, Pause, F1–F12. "
                "Esc — отменить, × — отключить сочетание.")
 KEY_PLACEHOLDER = "••••••••••••••••"
+SAVE_BAR_PLACES = {"inside": "Рядом с «Новая папка»", "above": "Над окном"}
 
 
 class Ui:
@@ -273,7 +275,8 @@ def _logo_image():
 
 
 class SettingsWindow(ctk.CTkToplevel):
-    PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"), ("ahk", "AutoHotkey"),
+    PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"),
+             ("savebar", "Сохранить как"), ("ahk", "AutoHotkey"),
              ("ahk_keys", "Клавиши AHK"), ("ai", "Claude (ИИ)"), ("rules", "Правила"), ("stats", "Что я о вас знаю"),
              ("updates", "Обновления"))
 
@@ -338,6 +341,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "main": self._main_tab(),
             "keys": self._keys_tab(),
             "snippets": self._snippets_tab(),
+            "savebar": self._savebar_tab(),
             "ahk": self._ahk_tab(),
             "ahk_keys": self._ahk_keys_tab(),
             "ai": self._ai_tab(),
@@ -721,6 +725,132 @@ class SettingsWindow(ctk.CTkToplevel):
     def remove_snippets(self) -> None:
         keep = {k: v for k, v in self.config_copy.snippets.items() if k not in self.snippet_tree.selection()}
         self._save_snippets(keep)
+
+    # -- the «Сохранить как» panel -------------------------------------------------
+
+    def _savebar_tab(self):
+        c = self.config_copy.save_bar
+        page = self._page("Панель «Сохранить как»", "Кнопки в окне «Сохранить как» любой программы (CorelDRAW, "
+                                                    "Acrobat…): копируют название открытой папки — как есть или с "
+                                                    "добавкой — и открывают в ней папку «PDF». Сами ничего не "
+                                                    "копируют: только по кнопке или её клавише.")
+        self.var_bar = tk.BooleanVar(value=c.enabled)
+        self.var_bar_pdf = tk.BooleanVar(value=c.make_pdf_folder)
+        self.var_bar_tips = tk.BooleanVar(value=c.tooltips)
+        self.var_bar_notify = tk.BooleanVar(value=c.notifications)
+        card = self._card(page)
+        self._switch_row(card, self.var_bar, "Показывать панель", "Выключите — окна сохранения станут обычными")
+        self._switch_row(card, self.var_bar_pdf, "Создавать папку «PDF» и переходить в неё",
+                         "Набранное имя файла остаётся, сам файл не сохраняется")
+        row = self._row(card, "Где панель", "Если в строке не хватит места — над окном")
+        self.bar_place = ctk.CTkSegmentedButton(row, values=list(SAVE_BAR_PLACES.values()), font=self.fonts["small"])
+        self.bar_place.set(SAVE_BAR_PLACES.get(c.place, SAVE_BAR_PLACES["inside"]))
+        self.bar_place.pack(side="right")
+        self._switch_row(card, self.var_bar_tips, "Подсказка при наведении", "Что именно скопирует кнопка")
+        self._switch_row(card, self.var_bar_notify, "Уведомлять о копировании", "Об ошибках Switcher сообщает всегда")
+        ctk.CTkLabel(page, text="Кнопки", font=self.fonts["section"], anchor="w").pack(fill="x", pady=(18, 2))
+        ctk.CTkLabel(page, text="Первая — основная (жёлтая). Изменения действуют сразу.", font=self.fonts["small"],
+                     text_color=MUTED, anchor="w").pack(fill="x", pady=(0, 6))
+        tree_card = ctk.CTkFrame(page, border_width=1)
+        tree_card.pack(fill="x", padx=(0, 4))
+        self.save_button_tree = ttk.Treeview(tree_card, columns=("on", "label", "copies", "keys"), show="headings",
+                                             style="Switcher.Treeview", height=6, selectmode="browse")
+        for col, title, width in (("on", "Вкл", 46), ("label", "Надпись", 250), ("copies", "Копирует", 190),
+                                  ("keys", "Клавиши", 130)):
+            self.save_button_tree.heading(col, text=title, anchor="w")
+            self.save_button_tree.column(col, width=width, minwidth=40, anchor="w", stretch=col == "copies")
+        self.save_button_tree.pack(fill="x", padx=12, pady=10)
+        self.save_button_tree.bind("<Double-1>", lambda event: self.edit_save_button())
+        actions = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        actions.pack(fill="x", pady=(10, 0))
+        self._button(actions, "Добавить…", self.add_save_button).pack(side="left")
+        self._button(actions, "Изменить…", self.edit_save_button).pack(side="left", padx=(8, 0))
+        self._button(actions, "↑", lambda: self.move_save_button(-1), width=40).pack(side="left", padx=(8, 0))
+        self._button(actions, "↓", lambda: self.move_save_button(1), width=40).pack(side="left", padx=(4, 0))
+        self._button(actions, "Вкл / выкл", self.toggle_save_button).pack(side="left", padx=(8, 0))
+        self._button(actions, "Удалить", self.remove_save_button, danger=True).pack(side="right")
+        self.refresh_save_buttons()
+        return page
+
+    def save_buttons(self) -> list[Button]:
+        return buttons_of(self.config_copy.save_bar.buttons)
+
+    def refresh_save_buttons(self, select: int | None = None) -> None:
+        tree = self.save_button_tree
+        tree.delete(*tree.get_children())
+        for index, button in enumerate(self.save_buttons()):
+            label = button.label + ("  (основная)" if index == 0 else "")
+            tree.insert("", "end", iid=str(index), values=(
+                "✓" if button.enabled else "—", label, button.text("«папка»"),
+                format_hotkey(button.hotkey) if button.hotkey else "—"))
+        if select is not None and tree.exists(str(select)):
+            tree.selection_set(str(select))
+
+    def _save_save_buttons(self, buttons: list[Button], select: int | None = None) -> None:
+        """The panel's buttons take effect at once, like snippets."""
+        listed = [b.to_dict() for b in buttons]
+        self.config_copy.save_bar.buttons = listed
+        live = copy.deepcopy(self.app.config)
+        live.save_bar.buttons = [dict(b) for b in listed]
+        self.app.update_config(live)
+        self.refresh_save_buttons(select)
+
+    def _selected_save_button(self) -> int | None:
+        selected = self.save_button_tree.selection()
+        return int(selected[0]) if selected else None
+
+    def put_save_button(self, index: int | None, button: Button) -> str | None:
+        """Add (index None) or replace a button; an error to show, or None."""
+        buttons = self.save_buttons()
+        if button.hotkey:
+            for other_index, other in enumerate(buttons):
+                if other_index != index and other.hotkey == button.hotkey:
+                    return f"{format_hotkey(button.hotkey)} уже у кнопки «{other.label}»."
+        if index is None:
+            buttons.append(button)
+            index = len(buttons) - 1
+        else:
+            buttons[index] = button
+        self._save_save_buttons(buttons, index)
+        return None
+
+    def add_save_button(self) -> None:
+        from .savebar_dialogs import ButtonDialog
+
+        ButtonDialog(self, lambda button: self.put_save_button(None, button))
+
+    def edit_save_button(self) -> None:
+        from .savebar_dialogs import ButtonDialog
+
+        index = self._selected_save_button()
+        if index is None:
+            return self.add_save_button()
+        ButtonDialog(self, lambda button: self.put_save_button(index, button), self.save_buttons()[index])
+
+    def move_save_button(self, step: int) -> None:
+        index = self._selected_save_button()
+        buttons = self.save_buttons()
+        if index is None or not 0 <= index + step < len(buttons):
+            return
+        buttons[index], buttons[index + step] = buttons[index + step], buttons[index]
+        self._save_save_buttons(buttons, index + step)
+
+    def toggle_save_button(self) -> None:
+        index = self._selected_save_button()
+        if index is None:
+            return
+        buttons = self.save_buttons()
+        b = buttons[index]
+        buttons[index] = Button(b.label, b.prefix, b.suffix, b.hotkey, not b.enabled)
+        self._save_save_buttons(buttons, index)
+
+    def remove_save_button(self) -> None:
+        index = self._selected_save_button()
+        if index is None:
+            return
+        buttons = self.save_buttons()
+        del buttons[index]
+        self._save_save_buttons(buttons, min(index, len(buttons) - 1) if buttons else None)
 
     # -- AutoHotkey ----------------------------------------------------------------
 
@@ -1467,6 +1597,11 @@ class SettingsWindow(ctk.CTkToplevel):
             raise ValueError("«Разбирать мои исправления»: нужно число, например 20") from None
         new.ai.fix_typos = self.var_typos.get()
         new.updates.check_automatically = self.var_auto_update.get()
+        new.save_bar.enabled = self.var_bar.get()
+        new.save_bar.make_pdf_folder = self.var_bar_pdf.get()
+        new.save_bar.tooltips = self.var_bar_tips.get()
+        new.save_bar.notifications = self.var_bar_notify.get()
+        new.save_bar.place = next((k for k, v in SAVE_BAR_PLACES.items() if v == self.bar_place.get()), "inside")
         key = self._entered_key()
         if key is not None:
             new.ai.api_key = protect(key)

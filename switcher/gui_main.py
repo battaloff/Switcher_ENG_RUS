@@ -182,7 +182,7 @@ def selftest(report: str | None = None) -> int:
         ui = Ui(state["app"])
         ui.open_settings(welcome=True)
         ui.root.update()
-        for tab in ("main", "keys", "snippets", "ahk", "ahk_keys", "ai", "rules", "stats", "updates"):
+        for tab in ("main", "keys", "snippets", "savebar", "ahk", "ahk_keys", "ai", "rules", "stats", "updates"):
             ui.window.show(tab)
             ui.root.update()
         ui.root.destroy()
@@ -202,8 +202,15 @@ def selftest(report: str | None = None) -> int:
         assert manager.supported, "no AutoHotkey support in this build"
         return f"{manager.describe_install()}; запущено скриптов: {len(manager.running(fresh=True))}"
 
+    def save_bar():
+        from . import savebar_dialogs, savebar_ui  # noqa: F401  (imported on demand)
+        from .platform.win_savebar import known_folders
+
+        return f"известных папок Windows: {len(known_folders())}"
+
     if "app" in state:
         step("AutoHotkey", autohotkey)
+        step("панель «Сохранить как»", save_bar)
         step("окно настроек", gui)
     text = "\n".join(lines) + f"\n{'SELFTEST OK' if ok else 'SELFTEST FAILED'}\n"
     path = report or os.path.join(tempfile.gettempdir(), "switcher-selftest.log")

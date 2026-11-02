@@ -119,6 +119,14 @@ double click, stops/reloads them with their tray-menu WM_COMMANDs, syntax-checks
 `ahk_conflicts.py` parses hotkeys/hotstrings and reports clashes with Switcher's keys and
 snippets; `ahk_hotkeys.py` relabels and adds hotkeys for the «Клавиши AHK» page.
 
+**«Сохранить как» panel.** `savebar.py` (pure: the dialog's folder from its address bar text,
+what a button copies, the "PDF" plan, placement), `platform/win_savebar.py` (the dialog's parts:
+the "Адрес: …" toolbar, the row of «Новая папка» between the address band and the panes, the file
+name box; opening a folder by typing it as the file name and pressing Save, then restoring the
+name), `savebar_ui.py` (a non-activating Tk strip on the Tk thread that polls the foreground
+window; button work runs on its own thread). Its hotkeys are swallowed in
+`WindowsBackend._hook_filter` only while its dialog is in front. Settings: `Config.save_bar`.
+
 **Packaging.** `packaging/windows/build.py`: prebuilt language model → PyInstaller one-dir
 `Switcher.exe` (linux/macos backends excluded) → `--selftest` of the bundle → Inno Setup installer.
 Modules imported only on demand must also be imported in `gui_main.selftest` so a missing one fails

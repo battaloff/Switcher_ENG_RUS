@@ -119,6 +119,8 @@ class Tray:
             pystray.MenuItem("AutoHotkey", pystray.Menu(lambda: self._ahk_items(pystray)),
                              visible=getattr(app, "ahk", None) is not None and app.ahk.supported),
             pystray.MenuItem("Автопереключение", toggle, checked=lambda item: app.controller.enabled),
+            pystray.MenuItem("Панель «Сохранить как»", lambda icon, item: self._toggle_save_bar(),
+                             checked=lambda item: app.config.save_bar.enabled, visible=sys.platform == "win32"),
             pystray.MenuItem("Что Switcher знает обо мне…",
                              lambda icon, item: ui.call(lambda: ui.open_settings(tab="stats"))),
             pystray.MenuItem("Разобрать мои исправления (Claude)", learn, enabled=lambda item: app.ai_ready()),
@@ -138,6 +140,14 @@ class Tray:
         app.backend.notifier = lambda message: self.icon.notify(message, "Switcher")
         threading.Thread(target=self.icon.run, name="switcher-tray", daemon=True).start()
         return True
+
+    def _toggle_save_bar(self) -> None:
+        import copy
+
+        new = copy.deepcopy(self.app.config)
+        new.save_bar.enabled = not self.app.config.save_bar.enabled
+        self.app.update_config(new)
+        self.app.backend.notify("Панель «Сохранить как» " + ("включена" if new.save_bar.enabled else "выключена"))
 
     def _refresh_menu(self) -> None:
         if self.icon is not None:
