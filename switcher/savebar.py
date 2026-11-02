@@ -7,6 +7,7 @@ Windows and ``savebar_ui.py`` draws the panel.
 
 from __future__ import annotations
 
+import collections
 import ntpath
 import re
 from dataclasses import dataclass
@@ -148,6 +149,27 @@ def hotkey_map(buttons: list[Button]) -> dict[tuple[frozenset, int], int]:
 
 
 # -- where the panel goes ----------------------------------------------------------------------
+
+def _differ(a: int, b: int) -> int:
+    return abs((a >> 16) - (b >> 16)) + abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)) + abs((a & 0xFF) - (b & 0xFF))
+
+
+def ink_end(pixels: list[int], width: int, scale: float) -> int | None:
+    """Where «Упорядочить» and «Новая папка» end in a strip of the row (pixels from its left edge):
+    the last column with text before a wide empty stretch.  None: nothing drawn there (yet)."""
+    if not pixels or width <= 0:
+        return None
+    height = len(pixels) // width
+    background = collections.Counter(pixels).most_common(1)[0][0]
+    gap = round(50 * scale)
+    last = None
+    for x in range(width):
+        if any(_differ(pixels[y * width + x], background) > 90 for y in range(height)):
+            last = x
+        elif last is not None and x - last > gap:
+            break
+    return last
+
 
 def place_bar(dialog: Rect, row: Rect | None, after_x: int | None, size: tuple[int, int], place: str,
               scale: float = 1.0, screen_top: int = 0) -> tuple[int, int, str]:

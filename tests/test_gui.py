@@ -521,7 +521,7 @@ class FakeDialogs:
     def alive(self, hwnd):
         return True
 
-    def geometry(self, hwnd):
+    def geometry(self, hwnd, measure=True):
         return self.dialogs.get(hwnd)
 
     def dialog_rect(self, hwnd):
@@ -577,6 +577,7 @@ def bar():
 
     app, dialogs = BarApp(), FakeDialogs()
     panel = SaveBarPanel(ROOT, app, system=dialogs)
+    panel.SETTLE = 0
     panel.app_, panel.dialogs = app, dialogs
     yield panel
     panel.hide()

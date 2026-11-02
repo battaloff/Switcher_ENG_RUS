@@ -16,7 +16,7 @@ import time
 import uuid
 from ctypes import wintypes
 
-from ..savebar import Geometry, Rect, folder_from_address
+from ..savebar import Geometry, Rect, folder_from_address, ink_end
 from .win_events import has_file_browser, looks_like_save
 
 log = logging.getLogger(__name__)
@@ -60,6 +60,15 @@ gdi32.SelectObject.restype = wintypes.HGDIOBJ
 gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
 gdi32.GetTextExtentPoint32W.argtypes = (wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.SIZE))
 gdi32.GetDeviceCaps.argtypes = (wintypes.HDC, ctypes.c_int)
+gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.CreateCompatibleBitmap.argtypes = (wintypes.HDC, ctypes.c_int, ctypes.c_int)
+gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+gdi32.BitBlt.argtypes = (wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HDC,
+                         ctypes.c_int, ctypes.c_int, wintypes.DWORD)
+gdi32.GetDIBits.argtypes = (wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
+                            ctypes.c_void_p, wintypes.UINT)
+gdi32.DeleteDC.argtypes = (wintypes.HDC,)
 ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 
 WM_GETTEXT, WM_SETTEXT, WM_COMMAND = 0x000D, 0x000C, 0x0111
@@ -73,6 +82,7 @@ SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x0001, 0x0010, 0x0040
 SW_HIDE = 0
 LOGPIXELSX = 88
 CLR_INVALID = 0xFFFFFFFF
+SRCCOPY = 0x00CC0020
 
 # the captions of «Упорядочить» and «Новая папка» by the language of Windows
 COMMAND_CAPTIONS = {0x19: ("Упорядочить", "Новая папка"), 0x22: ("Упорядкувати", "Нова папка"),
@@ -86,6 +96,13 @@ KNOWN_FOLDERS = {
     "downloads": "{374DE290-123F-4565-9164-39C4925E467B}", "pictures": "{33E28130-4E1E-4676-835A-98395C3BC3BB}",
     "music": "{4BD8D571-6D19-48D3-BE97-422220080E43}", "videos": "{18989B1D-99B5-455B-841C-AB7C74E4DDFC}",
 }
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
 
 
 class GUID(ctypes.Structure):
@@ -236,6 +253,29 @@ def _command_width(scale: float) -> int:
     return sum(text_width(c, scale) for c in captions) + round(COMMAND_EXTRA * scale)
 
 
+def grab(left: int, top: int, width: int, height: int) -> list[int]:
+    """What the screen shows there, as 0xRRGGBB pixels row by row."""
+    screen = user32.GetDC(None)
+    memory = gdi32.CreateCompatibleDC(screen)
+    bitmap = gdi32.CreateCompatibleBitmap(screen, width, height)
+    old = gdi32.SelectObject(memory, bitmap)
+    try:
+        gdi32.BitBlt(memory, 0, 0, width, height, screen, left, top, SRCCOPY)
+        header = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=width, biHeight=-height,
+                                  biPlanes=1, biBitCount=32, biCompression=0)
+        pixels = (ctypes.c_uint32 * (width * height))()
+        info = (ctypes.c_byte * (ctypes.sizeof(BITMAPINFOHEADER) + 16))()
+        ctypes.memmove(info, ctypes.byref(header), ctypes.sizeof(header))
+        if not gdi32.GetDIBits(memory, bitmap, 0, height, pixels, info, 0):
+            return []
+        return [p & 0xFFFFFF for p in pixels]
+    finally:
+        gdi32.SelectObject(memory, old)
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory)
+        user32.ReleaseDC(None, screen)
+
+
 def color_at(x: int, y: int) -> str | None:
     hdc = user32.GetDC(None)
     color = gdi32.GetPixel(hdc, x, y)
@@ -286,7 +326,15 @@ def _long(path: str) -> str:
 
 
 def _same(a: str, b: str) -> bool:
-    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+    """The same folder, also written another way (a short 8.3 name like RUNNER~1)."""
+    def norm(path: str) -> str:
+        try:
+            path = os.path.realpath(path)
+        except (OSError, ValueError):
+            pass
+        return os.path.normcase(os.path.normpath(path))
+
+    return norm(a) == norm(b)
 
 
 class WindowsSaveDialogs:
@@ -304,7 +352,10 @@ class WindowsSaveDialogs:
     def dialog_rect(self, hwnd: int) -> Rect:
         return _rect(hwnd)
 
-    def geometry(self, hwnd: int) -> Geometry | None:
+    def __init__(self):
+        self._ink: dict[int, int] = {}  # dialog → where its «Новая папка» ends, from the row's left
+
+    def geometry(self, hwnd: int, measure: bool = True) -> Geometry | None:
         if not user32.IsWindowVisible(hwnd) or not user32.IsWindowEnabled(hwnd):
             return None  # minimized away, or a message box is open over it
         dialog = _rect(hwnd)
@@ -314,7 +365,19 @@ class WindowsSaveDialogs:
         if row is None or not 16 * scale <= row[3] - row[1] <= 90 * scale:
             return Geometry(dialog, None, None, scale)
         after_x = row[0] + _command_width(scale)
-        color = color_at(row[2] - round(140 * scale), (row[1] + row[3]) // 2)
+        color = None
+        if measure:  # the panel is not over the row: see where «Новая папка» really ends
+            color = color_at(row[2] - round(140 * scale), (row[1] + row[3]) // 2)
+            if hwnd not in self._ink:
+                width = min(row[2] - row[0], round(700 * scale))
+                height = max(4, round(12 * scale))
+                found = ink_end(grab(row[0], (row[1] + row[3] - height) // 2, width, height), width, scale)
+                if found is not None:
+                    self._ink[hwnd] = found
+                    log.info("save bar: «Новая папка» ends %d px into the row (from the captions: %d)", found,
+                             after_x - row[0] - round(14 * scale))
+        if hwnd in self._ink:
+            after_x = row[0] + self._ink[hwnd] + round(14 * scale)
         return Geometry(dialog, row, after_x, scale, color)
 
     def folder(self, hwnd: int) -> tuple[str, str] | None:

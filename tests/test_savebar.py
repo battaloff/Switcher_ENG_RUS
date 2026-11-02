@@ -11,6 +11,7 @@ from switcher.savebar import (
     folder_from_address,
     hotkey_map,
     hotkey_vk,
+    ink_end,
     place_bar,
     plan,
     shown_buttons,
@@ -80,6 +81,19 @@ def test_the_panel_goes_next_to_new_folder_or_above_the_dialog():
     assert place_bar(dialog, row, 330, (420, 28), "above") == (108, 68, "above")
     assert place_bar((100, 10, 1500, 900), row, 330, (420, 28), "above")[1] == 0  # no room above the screen's top
     assert place_bar(dialog, (108, 160, 1492, 176), 330, (420, 28), "inside")[2] == "above"  # a row too low
+
+
+def test_where_new_folder_ends_is_seen_on_the_screen():
+    bg, ink = 0xF5F6F7, 0x1B1B1B
+    width, height = 400, 3
+    columns = [bg] * width
+    # «Упорядочить ▾», «Новая папка», and the view buttons far to the right
+    for x in list(range(10, 80)) + list(range(110, 185)) + list(range(390, 400)):
+        columns[x] = ink if x % 3 else bg
+    pixels = [bg] * width + columns + [bg] * width
+    assert ink_end(pixels, width, 1.0) == 184
+    assert ink_end([bg] * (width * height), width, 1.0) is None  # not drawn yet
+    assert ink_end([], 0, 1.0) is None
 
 
 def test_the_settings_keep_the_buttons(tmp_path):

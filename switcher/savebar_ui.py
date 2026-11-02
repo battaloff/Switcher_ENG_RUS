@@ -34,6 +34,7 @@ class SaveBarPanel:
     RECHECK_EVERY = 0.3   # a dialog that is not (yet) a save dialog: look again this often
     RECHECK_FOR = 8.0     # … for this long: a slow dialog gets its file browser late
     LAYOUT_EVERY = 0.4    # re-measure the dialog's rows this often (and whenever it moves)
+    SETTLE = 0.3          # a dialog that just came to the front is still being drawn: wait this long
 
     def __init__(self, root, app, system=None):
         if system is None:
@@ -56,6 +57,7 @@ class SaveBarPanel:
         self.tip: tk.Toplevel | None = None
         self.tip_hwnd = 0
         self._failed_at = 0.0
+        self._front = (0, 0.0)  # the window in front and since when
 
     # -- running ---------------------------------------------------------------------------------
 
@@ -82,8 +84,12 @@ class SaveBarPanel:
         front = self.system.foreground()
         if front and front in (self.hwnd, self.tip_hwnd):
             return  # the panel itself got the focus for a moment: keep things as they are
+        if front != self._front[0]:
+            self._front = (front, time.monotonic())
         if not buttons or not front or not self._is_save_dialog(front):
             self.hide()
+            return
+        if self.dialog != front and time.monotonic() - self._front[1] < self.SETTLE:
             return
         geometry = self._geometry(front)
         if geometry is None:
@@ -115,7 +121,7 @@ class SaveBarPanel:
         if layout is not None and layout[0] == hwnd and now - layout[2] < self.LAYOUT_EVERY \
                 and self.system.dialog_rect(hwnd) == layout[1]:
             return layout[3]
-        geometry = self.system.geometry(hwnd)
+        geometry = self.system.geometry(hwnd, measure=self.position is None)
         if geometry is None:
             self._layout = None
             return None

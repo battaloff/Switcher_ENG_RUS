@@ -40,6 +40,7 @@ user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
 user32.BringWindowToTop.argtypes = (wintypes.HWND,)
 user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT)
 user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
 user32.LoadKeyboardLayoutW.argtypes = (wintypes.LPCWSTR, wintypes.UINT)
 user32.LoadKeyboardLayoutW.restype = ctypes.c_void_p
@@ -145,12 +146,13 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
 
     Parts, get_text, color_at = win_savebar.Parts, win_savebar.get_text, win_savebar.color_at
     dialogs = win_savebar.WindowsSaveDialogs()
-    order = Path(os.environ["SWITCHER_HOME"]) / "заказы" / "ayk для s.raximov   (id_57306)"
+    # the long name of the folder: on the runner TEMP is a short 8.3 one (RUNNER~1), the dialog shows the long one
+    order = Path(os.path.realpath(os.environ["SWITCHER_HOME"])) / "заказы" / "ayk для s.raximov   (id_57306)"
     order.mkdir(parents=True, exist_ok=True)
     pdf = order / "PDF"
 
     def same(a, b) -> bool:
-        return os.path.normcase(os.path.normpath(str(a))) == os.path.normcase(os.path.normpath(str(b)))
+        return os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(os.path.realpath(str(b)))
 
     def file_name() -> str | None:
         edit = Parts(dialog).file_edit
@@ -182,7 +184,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
                                           and box["panel"].position):
         time.sleep(0.1)
     panel = box.get("panel")
-    geometry = dialogs.geometry(dialog)
+    geometry = dialogs.geometry(dialog, measure=False)  # the panel may be over the row now
     shown = panel is not None and panel.dialog == dialog and dialogs.visible(panel.hwnd)
     front = user32.GetForegroundWindow()
     note("Save bar", f"dialog {geometry.dialog if geometry else None}, row {geometry.row if geometry else None}, "
@@ -200,10 +202,29 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
         yellow = bool(color) and int(color[1:3], 16) > 200 and int(color[3:5], 16) > 150 and int(color[5:7], 16) < 120
         print(f"{'OK  ' if yellow else 'FAIL'} the panel is drawn: {color} at its main (yellow) button")
         results.append(yellow)
-        inside = panel.where == "inside" and geometry is not None and geometry.row is not None and \
+        fits = geometry is not None and geometry.row is not None and \
+            geometry.after_x + panel.size[0] <= geometry.row[2] - round(110 * geometry.scale)
+        placed = panel.where == ("inside" if fits else "above")
+        print(f"{'OK  ' if placed else 'FAIL'} the panel is {panel.where} (fits in the row: {fits})")
+        results.append(placed)
+        # a wide dialog: the panel moves into the row of «Новая папка», right after it
+        left, top = geometry.dialog[0], geometry.dialog[1]
+        user32.SetWindowPos(dialog, None, left, top, 1250, 720, 0x0004 | 0x0010)  # NOZORDER | NOACTIVATE
+        deadline = time.time() + 4
+        while time.time() < deadline and panel.where != "inside":
+            time.sleep(0.1)
+        time.sleep(0.5)
+        geometry = dialogs.geometry(dialog, measure=False)
+        ink = panel.system._ink.get(dialog)  # measured by the panel before it showed
+        inside = panel.where == "inside" and geometry.row is not None and panel.position is not None and \
             geometry.row[1] <= panel.position[1] and panel.position[1] + panel.size[1] <= geometry.row[3]
-        print(f"{'OK  ' if inside else 'FAIL'} the panel sits in the row of «Новая папка»")
-        results.append(inside)
+        after = ink is None or 0 < panel.position[0] - (geometry.row[0] + ink) <= round(40 * geometry.scale)
+        note("Save bar", f"wide dialog {geometry.dialog}, row {geometry.row}; «Новая папка» ends at "
+                         f"{geometry.row[0] + ink if ink is not None else None}; panel at {panel.position}")
+        print(f"{'OK  ' if inside and after else 'FAIL'} in a wide dialog the panel sits in the row right after "
+              f"«Новая папка»: {panel.where} at {panel.position}, the text ends at "
+              f"{geometry.row[0] + ink if ink is not None else 'not seen'}")
+        results.append(inside and after and front == user32.GetForegroundWindow())
 
     def hotkey(digit: str) -> None:
         user.press(Key.ctrl)
