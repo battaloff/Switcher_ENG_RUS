@@ -71,7 +71,8 @@ gdi32.GetDIBits.argtypes = (wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, winty
 gdi32.DeleteDC.argtypes = (wintypes.HDC,)
 ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 
-WM_GETTEXT, WM_SETTEXT, WM_COMMAND = 0x000D, 0x000C, 0x0111
+WM_GETTEXT, WM_SETTEXT, WM_COMMAND, WM_NEXTDLGCTL = 0x000D, 0x000C, 0x0111, 0x0028
+EM_GETSEL, EM_SETSEL = 0x00B0, 0x00B1
 SMTO_ABORTIFHUNG = 0x0002
 IDOK = 1
 FILE_NAME_BOX = 1148  # cmb13: the file name box of a file dialog
@@ -419,6 +420,22 @@ class WindowsSaveDialogs:
         if not arrived:
             log.warning("save bar: the dialog did not open %s", folder)
         return arrived
+
+    def caret_to_start(self, hwnd: int) -> None:
+        """The keyboard in the file name box, the caret before the name (nothing selected)."""
+        edit = Parts(hwnd).file_edit
+        if edit is None:
+            return
+        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, edit, 1)  # the dialog moves its focus there (and selects all)
+        user32.PostMessageW(edit, EM_SETSEL, 0, 0)
+        time.sleep(0.25)
+        # a dialog that has just opened a folder may select the whole name once more a moment later; but
+        # if the user already types (the caret moved, nothing selected), leave it be
+        selection = ctypes.c_size_t()
+        if user32.SendMessageTimeoutW(edit, EM_GETSEL, 0, 0, SMTO_ABORTIFHUNG, 300, ctypes.byref(selection)):
+            start, end = selection.value & 0xFFFF, (selection.value >> 16) & 0xFFFF
+            if start != end:
+                user32.PostMessageW(edit, EM_SETSEL, 0, 0)
 
     def copy(self, text: str) -> None:
         import pyperclip

@@ -140,9 +140,13 @@ class SaveBarPanel:
         key = (tuple(buttons), dark, height, background)
         if key == self._built and self.window is not None:
             return
+        if self._built is not None and self.window is not None:
+            # new buttons (edited in the settings): a fresh window, made the way the first one was
+            self.system.hide(self.hwnd)
+            self.window.destroy()
+            self.window, self.hwnd, self.position = None, 0, None
+            log.info("save bar: buttons changed: %s", ", ".join(b.label for b in buttons))
         self._create_window()
-        for child in self.window.winfo_children():
-            child.destroy()
         self.window.configure(background=background)
         try:  # how much CustomTkinter enlarges its widgets on this screen (sizes here are real pixels)
             scaling = ctk.ScalingTracker.get_window_dpi_scaling(self.window) * ctk.ScalingTracker.widget_scaling
@@ -198,6 +202,8 @@ class SaveBarPanel:
 
     def _show(self, dialog: int, x: int, y: int) -> None:
         self._arm_hotkeys(dialog)
+        if self.dialog != dialog:
+            log.info("save bar: on the save dialog %#x, %s, at %d,%d", dialog, self.where, x, y)
         self.dialog = dialog
         if self.position != (x, y) or not self.system.visible(self.hwnd):
             self.window.geometry(f"{self.size[0]}x{self.size[1]}+{x}+{y}")
@@ -292,6 +298,7 @@ class SaveBarPanel:
                         return text
                 finally:
                     self._work.release()
+            self.system.caret_to_start(dialog)  # the name is typed or pasted in front of the file name
             if config.notifications:
                 notify(f"Скопировано: {text}")
             return text

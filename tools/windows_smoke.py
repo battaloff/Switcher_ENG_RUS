@@ -245,6 +245,22 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+1 copies the folder's name and opens «PDF»: copied {copied!r}, "
           f"PDF made {pdf.is_dir()}, dialog in {now!r}, file name {kept!r}")
     results.append(ok)
+
+    from switcher.platform.windows import GUITHREADINFO
+
+    def caret():
+        edit = Parts(dialog).file_edit
+        found = user32.SendMessageW(edit, 0x00B0, 0, 0) if edit else -1  # EM_GETSEL
+        info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+        user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(dialog, None), ctypes.byref(info))
+        return (found & 0xFFFF, (found >> 16) & 0xFFFF), bool(edit) and info.hwndFocus == edit
+
+    time.sleep(0.5)
+    where, focused = caret()
+    ok = where == (0, 0) and focused
+    print(f"{'OK  ' if ok else 'FAIL'} after the button the caret is at the start of the file name: "
+          f"selection {where}, keyboard in the file name box {focused}")
+    results.append(ok)
     pyperclip.copy("")
     hotkey("2")
     deadline = time.time() + 3
@@ -254,6 +270,35 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     ok = copied == order.name + " PANCH" and not (pdf / "PDF").exists()
     print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+2 inside «PDF»: copied {copied!r}, no PDF inside PDF: "
           f"{not (pdf / 'PDF').exists()}")
+    results.append(ok)
+
+    # a button edited while the dialog is open, the way the settings page does it: shown at once
+    import copy
+
+    edited = copy.deepcopy(app.config)
+    edited.save_bar.buttons[1].update(label="PANCH_", suffix=" PANCH_")
+    app.update_config(edited, save=False)
+    deadline = time.time() + 6
+    while time.time() < deadline and not (len(panel.buttons) > 1 and panel.buttons[1].label == "PANCH_"
+                                          and panel.position and dialogs.visible(panel.hwnd)):
+        time.sleep(0.1)
+    time.sleep(0.5)
+    shown = len(panel.buttons) > 1 and panel.buttons[1].label == "PANCH_" and bool(panel.position) and \
+        dialogs.visible(panel.hwnd) and panel.dialog == dialog
+    color = color_at(panel.position[0] + 10, panel.position[1] + panel.size[1] // 2) if panel.position else None
+    yellow = bool(color) and int(color[1:3], 16) > 200 and int(color[3:5], 16) > 150 and int(color[5:7], 16) < 120
+    print(f"{'OK  ' if shown and yellow else 'FAIL'} an edited button shows at once: buttons "
+          f"{[b.label for b in panel.buttons]}, panel at {panel.position}, visible {dialogs.visible(panel.hwnd)}, "
+          f"colour {color}")
+    results.append(shown and yellow)
+    pyperclip.copy("")
+    hotkey("2")
+    deadline = time.time() + 3
+    while time.time() < deadline and pyperclip.paste() == "":
+        time.sleep(0.1)
+    copied = pyperclip.paste()
+    ok = copied == order.name + " PANCH_"
+    print(f"{'OK  ' if ok else 'FAIL'} the edited button copies its new text: {copied!r}")
     results.append(ok)
     return panel
 

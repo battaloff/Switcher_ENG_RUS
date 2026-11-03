@@ -509,7 +509,7 @@ class FakeDialogs:
         self.front = 0
         self.dialogs = {77: Geometry((100, 100, 1500, 900), (108, 160, 1492, 196), 330, 1.0, "#191919")}
         self.folders = {77: (r"\\srv\f\2026\НОЯБРЬ\2,11,26\готов\Заказ   (id_1)", "Заказ   (id_1)")}
-        self.copied, self.made, self.went, self.shown = [], [], [], {}
+        self.copied, self.made, self.went, self.shown, self.carets = [], [], [], {}, []
         self.fail = None
 
     def foreground(self):
@@ -544,6 +544,9 @@ class FakeDialogs:
 
     def copy(self, text):
         self.copied.append(text)
+
+    def caret_to_start(self, hwnd):
+        self.carets.append(hwnd)
 
     def prepare(self, window):
         window.update_idletasks()
@@ -623,10 +626,28 @@ def test_a_button_copies_the_folder_name_and_opens_pdf(bar):
     assert dialogs.made == [order + "\\PDF"] and dialogs.went == [order + "\\PDF"]
     assert bar.run(bar.buttons[1], 77) == "Заказ   (id_1) PANCH"  # now in "PDF": the order's name, no PDF\PDF
     assert dialogs.made == [order + "\\PDF"] and dialogs.copied == ["Заказ   (id_1)", "Заказ   (id_1) PANCH"]
+    assert dialogs.carets == [77, 77]  # the caret goes before the file name each time
     assert app.notes == []  # notifications are off by default
     app.config.save_bar.notifications = True
     bar.run(bar.buttons[3], 77)
     assert app.notes == ["Скопировано: Заказ   (id_1) ОБЖИГ"]
+
+
+def test_an_edited_button_shows_at_once(bar):
+    import copy
+
+    dialogs, app = bar.dialogs, bar.app_
+    dialogs.front = 77
+    bar.update()
+    first = bar.window
+    edited = copy.deepcopy(app.config)
+    edited.save_bar.buttons[1].update(label="PANCH_", suffix=" PANCH_")
+    app.config.__dict__.update(edited.__dict__)  # what App.update_config does
+    bar.update()
+    assert bar.window is not first and bar.dialog == 77 and bar.hwnd in dialogs.shown
+    assert [b.label for b in bar.buttons][:2] == ["Копировать имя папки", "PANCH_"]
+    assert bar.run(bar.buttons[1], 77) == "Заказ   (id_1) PANCH_"
+    assert not first.winfo_exists()
 
 
 def test_errors_are_told_even_with_notifications_off(bar):
