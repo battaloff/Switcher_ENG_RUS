@@ -17,6 +17,47 @@ from .controller import parse_hotkey
 PDF = "PDF"
 Rect = tuple[int, int, int, int]  # left, top, right, bottom (screen pixels)
 
+# ready-made colours for the buttons: (name, colour); "" is the usual look (yellow main, grey others)
+PALETTE = (
+    ("Жёлтый", "#FFC83D"), ("Оранжевый", "#FF8C42"), ("Красный", "#E5484D"), ("Розовый", "#E93D82"),
+    ("Фиолетовый", "#8E4EC6"), ("Синий", "#3E63DD"), ("Голубой", "#0EA5E9"), ("Зелёный", "#30A46C"),
+    ("Серый", "#8B8D98"),
+)
+_HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def normal_color(value) -> str:
+    """A colour as "#RRGGBB", or "" (the usual look) for anything else."""
+    value = str(value or "").strip()
+    return value.upper() if _HEX.fullmatch(value) else ""
+
+
+def color_name(color: str) -> str:
+    """What the settings list says: «Зелёный», «#12AB34», or «обычный»."""
+    if not color:
+        return "обычный"
+    return next((name for name, value in PALETTE if value == color.upper()), color.upper())
+
+
+def _rgb(color: str) -> tuple[int, int, int]:
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+
+
+def text_on(color: str) -> str:
+    """Dark or white text, whichever reads better on ``color``."""
+    def linear(channel: int) -> float:
+        c = channel / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (linear(c) for c in _rgb(color))
+    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#1B1B1B" if luminance > 0.33 else "#FFFFFF"
+
+
+def darker(color: str, by: float = 0.12) -> str:
+    """The colour under the mouse: a little darker."""
+    return "#" + "".join(f"{round(c * (1 - by)):02X}" for c in _rgb(color))
+
 
 @dataclass(frozen=True)
 class Button:
@@ -25,6 +66,7 @@ class Button:
     suffix: str = ""
     hotkey: str = ""
     enabled: bool = True
+    color: str = ""  # "#RRGGBB"; "" — the usual look
 
     def text(self, folder_name: str) -> str:
         """What the button puts on the clipboard: «<prefix><folder><suffix>»."""
@@ -32,7 +74,7 @@ class Button:
 
     def to_dict(self) -> dict:
         return {"label": self.label, "prefix": self.prefix, "suffix": self.suffix, "hotkey": self.hotkey,
-                "enabled": self.enabled}
+                "enabled": self.enabled, "color": self.color}
 
 
 def default_buttons() -> list[dict]:
@@ -52,7 +94,7 @@ def buttons_of(items) -> list[Button]:
             continue
         found.append(Button(str(item["label"]).strip(), str(item.get("prefix", "") or ""),
                             str(item.get("suffix", "") or ""), str(item.get("hotkey", "") or "").strip(),
-                            bool(item.get("enabled", True))))
+                            bool(item.get("enabled", True)), normal_color(item.get("color"))))
     return found
 
 

@@ -650,6 +650,20 @@ def test_an_edited_button_shows_at_once(bar):
     assert not first.winfo_exists()
 
 
+def test_buttons_are_drawn_in_their_colours(bar):
+    dialogs, app = bar.dialogs, bar.app_
+    app.config.save_bar.buttons[0]["color"] = "#3E63DD"
+    app.config.save_bar.buttons[2]["color"] = "#30A46C"
+    dialogs.front = 77
+    bar.update()
+    from switcher import savebar_ui
+
+    widgets = bar.window.winfo_children()
+    usual = savebar_ui.OTHER[savebar_ui.ctk.get_appearance_mode() == "Dark"]
+    assert [w.cget("fg_color") for w in widgets[:4]] == ["#3E63DD", usual, "#30A46C", usual]
+    assert widgets[0].cget("text_color") == "#FFFFFF"  # white reads better on blue
+
+
 def test_errors_are_told_even_with_notifications_off(bar):
     from switcher.savebar import Button
 
@@ -685,3 +699,23 @@ def test_the_save_bar_page(window):
     assert window.app.saved[-1].save_bar.buttons[3]["enabled"] is False
     window.remove_save_button()
     assert len(window.app.saved[-1].save_bar.buttons) == 4
+
+
+def test_a_colour_is_chosen_for_a_button(window):
+    from switcher.savebar import Button
+    from switcher.savebar_dialogs import ButtonDialog
+
+    window.show("savebar")
+    taken = []
+    dialog = ButtonDialog(window, lambda button: taken.append(button), Button("ОБЖИГ", suffix=" ОБЖИГ"))
+    ROOT.update()
+    dialog.pick("#30a46c")
+    assert dialog.sample.cget("fg_color") == "#30A46C" and dialog.swatches["#30A46C"].cget("border_width") == 3
+    dialog.done()
+    assert taken == [Button("ОБЖИГ", suffix=" ОБЖИГ", color="#30A46C")]
+    assert window.put_save_button(3, taken[0]) is None
+    tree = window.save_button_tree
+    assert tree.item("3")["values"][3] == "Зелёный" and tree.item("0")["values"][3] == "жёлтый"
+    window.save_button_tree.selection_set("3")
+    window.toggle_save_button()  # switching it off keeps the colour
+    assert window.app.saved[-1].save_bar.buttons[3] == {**taken[0].to_dict(), "enabled": False}

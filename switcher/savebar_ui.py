@@ -15,7 +15,16 @@ import tkinter as tk
 
 import customtkinter as ctk
 
-from .savebar import Button, Geometry, hotkey_map, place_bar, plan, shown_buttons
+from .savebar import (
+    Button,
+    Geometry,
+    darker,
+    hotkey_map,
+    place_bar,
+    plan,
+    shown_buttons,
+    text_on,
+)
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +36,19 @@ OTHER_HOVER = ("#F0F0F0", "#3A3A3A")
 OTHER_BORDER = ("#D1D1D1", "#474747")
 OTHER_TEXT = ("#1B1B1B", "#F2F2F2")
 ROW = ("#F9F9F9", "#191919")           # when the dialog's own colour can't be read
+
+
+def button_look(button: Button, main: bool, dark: bool) -> dict:
+    """The colours of a panel button: its own colour if it has one, else yellow for the main one
+    and the dialog's grey for the others."""
+    if button.color:
+        return {"fg_color": button.color, "hover_color": darker(button.color), "text_color": text_on(button.color),
+                "border_width": 0, "border_color": button.color}
+    if main:
+        return {"fg_color": MAIN[dark], "hover_color": MAIN_HOVER[dark], "text_color": MAIN_TEXT[dark],
+                "border_width": 0, "border_color": MAIN[dark]}
+    return {"fg_color": OTHER[dark], "hover_color": OTHER_HOVER[dark], "text_color": OTHER_TEXT[dark],
+            "border_width": 1, "border_color": OTHER_BORDER[dark]}
 
 
 class SaveBarPanel:
@@ -156,13 +178,11 @@ class SaveBarPanel:
         font = ctk.CTkFont(family="Segoe UI", size=12)
         for index, button in enumerate(buttons):
             main = index == 0
+            look = button_look(button, main, dark)
             widget = ctk.CTkButton(
                 self.window, text=button.label, width=round((font.measure(button.label) + 22 * scaling) / scaling),
-                height=round(height / scaling), corner_radius=4,
-                font=font, border_width=0 if main else 1, bg_color=background,
-                fg_color=MAIN[dark] if main else OTHER[dark], hover_color=MAIN_HOVER[dark] if main else OTHER_HOVER[dark],
-                text_color=MAIN_TEXT[dark] if main else OTHER_TEXT[dark], border_color=OTHER_BORDER[dark],
-                command=lambda i=index: self.press(i))
+                height=round(height / scaling), corner_radius=4, font=font, bg_color=background,
+                command=lambda i=index: self.press(i), **look)
             widget.pack(side="left", padx=(0 if main else round(6 / scaling), 0), pady=0)
             widget.bind("<Enter>", lambda _e, i=index: self._show_tip(i), add="+")
             widget.bind("<Leave>", lambda _e: self._hide_tip(), add="+")

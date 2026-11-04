@@ -4,17 +4,22 @@ import json
 
 from switcher.config import Config, load_config
 from switcher.savebar import (
+    PALETTE,
     Button,
     Plan,
     buttons_of,
+    color_name,
+    darker,
     default_buttons,
     folder_from_address,
     hotkey_map,
     hotkey_vk,
     ink_end,
+    normal_color,
     place_bar,
     plan,
     shown_buttons,
+    text_on,
 )
 
 JOB = r"\\192.168.1.41\f\вывод CtP ФАЙЛЫ НА ФОРМЫ!!!!!\2026\НОЯБРЬ\2,11,26\готов\ayk для s.raximov   (id_57306)"
@@ -62,6 +67,20 @@ def test_the_buttons_and_what_they_copy():
     config = Config().save_bar
     config.buttons = junk
     assert shown_buttons(config) == [Button("B")]
+
+
+def test_a_button_has_its_own_colour():
+    green = Button("ОБЖИГ", suffix=" ОБЖИГ", color="#30A46C")
+    assert buttons_of([green.to_dict()]) == [green]
+    assert buttons_of([{"label": "A", "color": "#30a46c"}])[0].color == "#30A46C"
+    assert buttons_of([{"label": "A", "color": "зелёный"}, {"label": "B"}])[0].color == ""  # hand-edited junk
+    assert normal_color(None) == "" and normal_color(" #ffc83d ") == "#FFC83D" and normal_color("#FFF") == ""
+    assert color_name("#30a46c") == "Зелёный" and color_name("#123456") == "#123456" and color_name("") == "обычный"
+    assert darker("#FFC83D") == "#E0B036"
+    # the caption stays readable: dark on yellow and orange, white on blue, green, red…
+    on = {name: text_on(value) for name, value in PALETTE}
+    assert on["Жёлтый"] == on["Оранжевый"] == "#1B1B1B"
+    assert on["Синий"] == on["Зелёный"] == on["Красный"] == on["Фиолетовый"] == "#FFFFFF"
 
 
 def test_hotkeys_by_their_windows_key_codes():

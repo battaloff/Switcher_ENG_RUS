@@ -7,6 +7,7 @@ to it through :meth:`Ui.call`.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import logging
 import queue
 import sys
@@ -28,7 +29,7 @@ from .hotkeys import problem as hotkey_problem
 from .layouts import EN, RU, canonical_keys, text_lang
 from .paths import data_dir
 from .report import rule_rows, stats_text
-from .savebar import Button, buttons_of
+from .savebar import Button, buttons_of, color_name
 
 log = logging.getLogger(__name__)
 
@@ -753,10 +754,11 @@ class SettingsWindow(ctk.CTkToplevel):
                      text_color=MUTED, anchor="w").pack(fill="x", pady=(0, 6))
         tree_card = ctk.CTkFrame(page, border_width=1)
         tree_card.pack(fill="x", padx=(0, 4))
-        self.save_button_tree = ttk.Treeview(tree_card, columns=("on", "label", "copies", "keys"), show="headings",
-                                             style="Switcher.Treeview", height=6, selectmode="browse")
-        for col, title, width in (("on", "Вкл", 46), ("label", "Надпись", 250), ("copies", "Копирует", 190),
-                                  ("keys", "Клавиши", 130)):
+        self.save_button_tree = ttk.Treeview(tree_card, columns=("on", "label", "copies", "color", "keys"),
+                                             show="headings", style="Switcher.Treeview", height=6,
+                                             selectmode="browse")
+        for col, title, width in (("on", "Вкл", 46), ("label", "Надпись", 220), ("copies", "Копирует", 170),
+                                  ("color", "Цвет", 100), ("keys", "Клавиши", 120)):
             self.save_button_tree.heading(col, text=title, anchor="w")
             self.save_button_tree.column(col, width=width, minwidth=40, anchor="w", stretch=col == "copies")
         self.save_button_tree.pack(fill="x", padx=12, pady=10)
@@ -782,6 +784,7 @@ class SettingsWindow(ctk.CTkToplevel):
             label = button.label + ("  (основная)" if index == 0 else "")
             tree.insert("", "end", iid=str(index), values=(
                 "✓" if button.enabled else "—", label, button.text("«папка»"),
+                color_name(button.color) if button.color or index else "жёлтый",
                 format_hotkey(button.hotkey) if button.hotkey else "—"))
         if select is not None and tree.exists(str(select)):
             tree.selection_set(str(select))
@@ -817,7 +820,7 @@ class SettingsWindow(ctk.CTkToplevel):
     def add_save_button(self) -> None:
         from .savebar_dialogs import ButtonDialog
 
-        ButtonDialog(self, lambda button: self.put_save_button(None, button))
+        ButtonDialog(self, lambda button: self.put_save_button(None, button), main=not self.save_buttons())
 
     def edit_save_button(self) -> None:
         from .savebar_dialogs import ButtonDialog
@@ -825,7 +828,8 @@ class SettingsWindow(ctk.CTkToplevel):
         index = self._selected_save_button()
         if index is None:
             return self.add_save_button()
-        ButtonDialog(self, lambda button: self.put_save_button(index, button), self.save_buttons()[index])
+        ButtonDialog(self, lambda button: self.put_save_button(index, button), self.save_buttons()[index],
+                     main=index == 0)
 
     def move_save_button(self, step: int) -> None:
         index = self._selected_save_button()
@@ -840,8 +844,7 @@ class SettingsWindow(ctk.CTkToplevel):
         if index is None:
             return
         buttons = self.save_buttons()
-        b = buttons[index]
-        buttons[index] = Button(b.label, b.prefix, b.suffix, b.hotkey, not b.enabled)
+        buttons[index] = dataclasses.replace(buttons[index], enabled=not buttons[index].enabled)
         self._save_save_buttons(buttons, index)
 
     def remove_save_button(self) -> None:
