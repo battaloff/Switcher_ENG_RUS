@@ -89,8 +89,9 @@ SRCCOPY = 0x00CC0020
 COMMAND_CAPTIONS = {0x19: ("Упорядочить", "Новая папка"), 0x22: ("Упорядкувати", "Нова папка"),
                     0x09: ("Organize", "New folder")}
 # what the two buttons take beside their captions, in pixels at 100 %: the margin before
-# «Упорядочить», its arrow and padding, the padding of «Новая папка», the gap before the panel
-COMMAND_EXTRA = 12 + 34 + 28
+# «Упорядочить», its arrow and padding, and the padding of «Новая папка» after its caption
+COMMAND_EXTRA = 12 + 34 + 14
+NEW_FOLDER_PAD = 14  # from the end of the «Новая папка» caption to the end of its button
 
 KNOWN_FOLDERS = {
     "desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}", "documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",
@@ -177,7 +178,7 @@ class Parts:
 
     def __init__(self, dialog: int):
         self.dialog = dialog
-        self.address = self.band = self.view = self.file_edit = self.save_button = None
+        self.address = self.band = self.view = self.file_edit = self.save_button = self.items = None
         self.pane_tops: list[int] = []
         best_edit = 0
         for child in _children(dialog):
@@ -190,6 +191,8 @@ class Parts:
                 self.pane_tops.append(_rect(child)[1])
             elif cls == "DUIViewWndClassName" and self.view is None:
                 self.view = _rect(child)
+            elif cls == "DirectUIHWND" and self.items is None and _class(user32.GetParent(child)) == "SHELLDLL_DefView":
+                self.items = child  # the list of files and folders
             elif cls == "Button" and user32.GetDlgCtrlID(child) == IDOK and self.save_button is None:
                 self.save_button = child
             elif cls == "Edit":
@@ -365,7 +368,7 @@ class WindowsSaveDialogs:
         row = parts.row()
         if row is None or not 16 * scale <= row[3] - row[1] <= 90 * scale:
             return Geometry(dialog, None, None, scale)
-        after_x = row[0] + _command_width(scale)
+        after_x = row[0] + _command_width(scale)  # where the «Новая папка» button ends
         color = None
         if measure:  # the panel is not over the row: see where «Новая папка» really ends
             color = color_at(row[2] - round(140 * scale), (row[1] + row[3]) // 2)
@@ -376,9 +379,9 @@ class WindowsSaveDialogs:
                 if found is not None:
                     self._ink[hwnd] = found
                     log.info("save bar: «Новая папка» ends %d px into the row (from the captions: %d)", found,
-                             after_x - row[0] - round(14 * scale))
+                             after_x - row[0] - round(NEW_FOLDER_PAD * scale))
         if hwnd in self._ink:
-            after_x = row[0] + self._ink[hwnd] + round(14 * scale)
+            after_x = row[0] + self._ink[hwnd] + round(NEW_FOLDER_PAD * scale)
         return Geometry(dialog, row, after_x, scale, color)
 
     def folder(self, hwnd: int) -> tuple[str, str] | None:
@@ -436,6 +439,28 @@ class WindowsSaveDialogs:
             start, end = selection.value & 0xFFFF, (selection.value >> 16) & 0xFFFF
             if start != end:
                 user32.PostMessageW(edit, EM_SETSEL, 0, 0)
+
+    def new_folder(self, hwnd: int) -> bool:
+        """The dialog's own «Новая папка» (Ctrl+Shift+N in its list of files): it makes the folder and
+        lets the user type its name."""
+        from .windows import WindowsBackend
+
+        items = Parts(hwnd).items
+        if items is None:
+            return False
+        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, items, 1)  # the keyboard in the list of files
+        time.sleep(0.15)
+        if int(user32.GetForegroundWindow() or 0) != hwnd:
+            return False
+        ctrl, shift, n, up = 0x11, 0x10, 0x4E, 0x0002
+        WindowsBackend._send([(ctrl, 0, 0), (shift, 0, 0), (n, 0, 0), (n, 0, up), (shift, 0, up), (ctrl, 0, up)])
+        return True
+
+    def subfolders(self, path: str) -> set[str]:
+        try:
+            return {entry.name for entry in os.scandir(_long(path)) if entry.is_dir()}
+        except OSError:
+            return set()
 
     def copy(self, text: str) -> None:
         import pyperclip

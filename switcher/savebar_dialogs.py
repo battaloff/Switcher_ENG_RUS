@@ -20,9 +20,10 @@ from .gui import (
 )
 from .hotkeys import format_hotkey
 from .hotkeys import problem as hotkey_problem
-from .savebar import PALETTE, Button, darker, hotkey_vk, normal_color
+from .savebar import COPY, NEW_FOLDER, PALETTE, Button, darker, hotkey_vk, normal_color
 
 SAMPLE_FOLDER = "Папка заказа"
+ACTION_TITLES = {COPY: "Копирует имя папки", NEW_FOLDER: "Создаёт новую папку"}
 
 
 class ButtonDialog(ctk.CTkToplevel):
@@ -33,7 +34,7 @@ class ButtonDialog(ctk.CTkToplevel):
         super().__init__(master)
         _set_icon(self)
         self.title(("Кнопка «" + button.label + "»" if button else "Новая кнопка") + " — Switcher")
-        self.geometry("560x590")
+        self.geometry("560x650")
         self.resizable(False, False)
         self.on_done = on_done
         button = button or Button("")
@@ -55,6 +56,12 @@ class ButtonDialog(ctk.CTkToplevel):
             return entry
 
         self.label = field("Надпись на кнопке", button.label, "Например: PANCH")
+        self.action = button.action
+        ctk.CTkLabel(self, text="Что делает", font=bold, anchor="w").pack(pady=(12, 4), **pad)
+        self.actions = ctk.CTkSegmentedButton(self, values=list(ACTION_TITLES.values()), font=body,
+                                              command=self._action_chosen)
+        self.actions.set(ACTION_TITLES[self.action])
+        self.actions.pack(anchor="w", padx=18)
         self.prefix = field("Перед именем папки", button.prefix, "Необязательно")
         self.suffix = field("После имени папки", button.suffix, "Например: « PANCH» — с пробелом впереди")
         ctk.CTkLabel(self, text="Горячая клавиша (только в окне «Сохранить как»)", font=bold, anchor="w").pack(
@@ -116,9 +123,21 @@ class ButtonDialog(ctk.CTkToplevel):
         return format_hotkey(self.spec) if self.spec else "Без клавиши — нажмите здесь, чтобы назначить"
 
     def _preview(self) -> None:
-        text = Button(self.label.get().strip() or "?", self.prefix.get(), self.suffix.get()).text(SAMPLE_FOLDER)
-        self.preview.configure(text=f"Скопирует: «{text}»")
+        if self.action == NEW_FOLDER:
+            self.preview.configure(text="Создаст новую папку в открытой папке, как «Новая папка» в самом окне: "
+                                        "останется ввести её имя.")
+        else:
+            text = Button(self.label.get().strip() or "?", self.prefix.get(), self.suffix.get()).text(SAMPLE_FOLDER)
+            self.preview.configure(text=f"Скопирует: «{text}»")
+        for entry in (self.prefix, self.suffix):  # a new folder has nothing to add to a name
+            entry.configure(state="disabled" if self.action == NEW_FOLDER else "normal")
         self._show_sample()
+
+    def _action_chosen(self, title: str) -> None:
+        self.action = next(key for key, value in ACTION_TITLES.items() if value == title)
+        if self.action == NEW_FOLDER and not self.label.get().strip():
+            self.label.insert(0, "Новая папка")
+        self._preview()
 
     def _show_sample(self) -> None:
         """The button as the panel will draw it, and a ring around the chosen colour."""
@@ -179,7 +198,7 @@ class ButtonDialog(ctk.CTkToplevel):
             self.status.configure(text="Напишите надпись для кнопки.")
             return
         error = self.on_done(Button(label, self.prefix.get(), self.suffix.get(), self.spec, self.enabled.get(),
-                                    self.color))
+                                    self.color, self.action))
         if error:
             self.status.configure(text=error)
             return

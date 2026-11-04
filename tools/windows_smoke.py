@@ -218,7 +218,8 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
         ink = panel.system._ink.get(dialog)  # measured by the panel before it showed
         inside = panel.where == "inside" and geometry.row is not None and panel.position is not None and \
             geometry.row[1] <= panel.position[1] and panel.position[1] + panel.size[1] <= geometry.row[3]
-        after = ink is None or 0 < panel.position[0] - (geometry.row[0] + ink) <= round(40 * geometry.scale)
+        gap = (14 + app.config.save_bar.gap) * geometry.scale  # the «Новая папка» button's padding + the gap
+        after = ink is None or gap - 3 <= panel.position[0] - (geometry.row[0] + ink) <= gap + 3
         note("Save bar", f"wide dialog {geometry.dialog}, row {geometry.row}; «Новая папка» ends at "
                          f"{geometry.row[0] + ink if ink is not None else None}; panel at {panel.position}")
         print(f"{'OK  ' if inside and after else 'FAIL'} in a wide dialog the panel sits in the row right after "
@@ -300,6 +301,30 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     ok = copied == order.name + " PANCH_"
     print(f"{'OK  ' if ok else 'FAIL'} the edited button copies its new text: {copied!r}")
     results.append(ok)
+
+    # the panel's own «Новая папка»: the dialog makes a folder, ready for its name to be typed
+    from switcher.savebar import NEW_FOLDER, new_folder_button
+
+    edited = copy.deepcopy(app.config)
+    edited.save_bar.buttons.append(new_folder_button().to_dict())  # Ctrl+Shift+5
+    app.update_config(edited, save=False)
+    deadline = time.time() + 6
+    while time.time() < deadline and not (any(b.action == NEW_FOLDER for b in panel.buttons) and panel.position):
+        time.sleep(0.1)
+    time.sleep(0.5)
+    before = {p.name for p in pdf.iterdir() if p.is_dir()}
+    hotkey("5")
+    made: set = set()
+    deadline = time.time() + 6
+    while time.time() < deadline and not made:
+        time.sleep(0.2)
+        made = {p.name for p in pdf.iterdir() if p.is_dir()} - before
+    print(f"{'OK  ' if made else 'FAIL'} the panel's «Новая папка» makes a folder in the dialog: {sorted(made)}")
+    results.append(bool(made))
+    time.sleep(0.5)
+    user.press(Key.esc)  # keep the name it got
+    user.release(Key.esc)
+    time.sleep(0.5)
     return panel
 
 

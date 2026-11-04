@@ -747,6 +747,13 @@ class SettingsWindow(ctk.CTkToplevel):
         self.bar_place = ctk.CTkSegmentedButton(row, values=list(SAVE_BAR_PLACES.values()), font=self.fonts["small"])
         self.bar_place.set(SAVE_BAR_PLACES.get(c.place, SAVE_BAR_PLACES["inside"]))
         self.bar_place.pack(side="right")
+        row = self._row(card, "Отступ от «Новая папка»", "Насколько правее её кнопки начинается панель")
+        self.var_bar_gap = tk.IntVar(value=max(0, min(160, int(c.gap))))
+        self.bar_gap_label = ctk.CTkLabel(row, text="", font=self.fonts["small"], width=60, anchor="e")
+        self.bar_gap_label.pack(side="right")
+        ctk.CTkSlider(row, from_=0, to=160, number_of_steps=32, variable=self.var_bar_gap, width=180,
+                      command=lambda _v: self._show_bar_gap()).pack(side="right", padx=(0, 8))
+        self._show_bar_gap()
         self._switch_row(card, self.var_bar_tips, "Подсказка при наведении", "Что именно скопирует кнопка")
         self._switch_row(card, self.var_bar_notify, "Уведомлять о копировании", "Об ошибках Switcher сообщает всегда")
         ctk.CTkLabel(page, text="Кнопки", font=self.fonts["section"], anchor="w").pack(fill="x", pady=(18, 2))
@@ -757,7 +764,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.save_button_tree = ttk.Treeview(tree_card, columns=("on", "label", "copies", "color", "keys"),
                                              show="headings", style="Switcher.Treeview", height=6,
                                              selectmode="browse")
-        for col, title, width in (("on", "Вкл", 46), ("label", "Надпись", 220), ("copies", "Копирует", 170),
+        for col, title, width in (("on", "Вкл", 46), ("label", "Надпись", 220), ("copies", "Что делает", 170),
                                   ("color", "Цвет", 100), ("keys", "Клавиши", 120)):
             self.save_button_tree.heading(col, text=title, anchor="w")
             self.save_button_tree.column(col, width=width, minwidth=40, anchor="w", stretch=col == "copies")
@@ -774,6 +781,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self.refresh_save_buttons()
         return page
 
+    def _show_bar_gap(self) -> None:
+        self.bar_gap_label.configure(text=f"{int(self.var_bar_gap.get())} точек")
+
     def save_buttons(self) -> list[Button]:
         return buttons_of(self.config_copy.save_bar.buttons)
 
@@ -783,7 +793,7 @@ class SettingsWindow(ctk.CTkToplevel):
         for index, button in enumerate(self.save_buttons()):
             label = button.label + ("  (основная)" if index == 0 else "")
             tree.insert("", "end", iid=str(index), values=(
-                "✓" if button.enabled else "—", label, button.text("«папка»"),
+                "✓" if button.enabled else "—", label, button.what(),
                 color_name(button.color) if button.color or index else "жёлтый",
                 format_hotkey(button.hotkey) if button.hotkey else "—"))
         if select is not None and tree.exists(str(select)):
@@ -1604,6 +1614,7 @@ class SettingsWindow(ctk.CTkToplevel):
         new.save_bar.make_pdf_folder = self.var_bar_pdf.get()
         new.save_bar.tooltips = self.var_bar_tips.get()
         new.save_bar.notifications = self.var_bar_notify.get()
+        new.save_bar.gap = int(self.var_bar_gap.get())
         new.save_bar.place = next((k for k, v in SAVE_BAR_PLACES.items() if v == self.bar_place.get()), "inside")
         key = self._entered_key()
         if key is not None:

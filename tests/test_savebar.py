@@ -83,6 +83,15 @@ def test_a_button_has_its_own_colour():
     assert on["Синий"] == on["Зелёный"] == on["Красный"] == on["Фиолетовый"] == "#FFFFFF"
 
 
+def test_a_button_can_make_a_new_folder():
+    from switcher.savebar import COPY, NEW_FOLDER, new_folder_button
+
+    button = new_folder_button()
+    assert button.action == NEW_FOLDER and buttons_of([button.to_dict()]) == [button]
+    assert button.what() == "создаёт новую папку" and Button("PANCH", suffix=" PANCH").what() == "«папка» PANCH"
+    assert buttons_of([{"label": "A", "action": "format C:"}])[0].action == COPY  # hand-edited junk
+
+
 def test_hotkeys_by_their_windows_key_codes():
     assert hotkey_vk("<ctrl>+<shift>+1") == (frozenset({"ctrl", "shift"}), 0x31)
     assert hotkey_vk("<ctrl>+<alt>+p") == (frozenset({"ctrl", "alt"}), 0x50)

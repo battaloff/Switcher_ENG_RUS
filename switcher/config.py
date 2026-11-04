@@ -56,6 +56,7 @@ class SaveBar:
     # {"label", "prefix", "suffix", "hotkey", "enabled"}; the first one is the main (yellow) button
     buttons: list[dict] = field(default_factory=_save_bar_buttons)
     place: str = "inside"              # "inside": next to «Новая папка»; "above": over the dialog
+    gap: int = 16                      # pixels (at 100 %) between «Новая папка» and the panel
     make_pdf_folder: bool = True       # a click also creates "PDF" in the folder and opens it
     tooltips: bool = False             # what a button copies, when the mouse is over it
     notifications: bool = False        # "Скопировано: …" after a click (errors are always shown)

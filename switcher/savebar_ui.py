@@ -16,6 +16,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 from .savebar import (
+    NEW_FOLDER,
     Button,
     Geometry,
     darker,
@@ -118,8 +119,8 @@ class SaveBarPanel:
             self.hide()
             return
         self._build(buttons, geometry, front)
-        x, y, self.where = place_bar(geometry.dialog, geometry.row, geometry.after_x, self.size, config.place,
-                                     geometry.scale)
+        after = None if geometry.after_x is None else geometry.after_x + round(max(0, config.gap) * geometry.scale)
+        x, y, self.where = place_bar(geometry.dialog, geometry.row, after, self.size, config.place, geometry.scale)
         self._show(front, x, y)
 
     def _is_save_dialog(self, hwnd: int) -> bool:
@@ -249,9 +250,13 @@ class SaveBarPanel:
     def _show_tip(self, index: int) -> None:
         if not self.app.config.save_bar.tooltips or index >= len(self.buttons) or not self.dialog:
             return
-        found = self.system.folder(self.dialog)
-        what = self.buttons[index].text(plan(found[0], found[1], False).name) if found else None
-        text = f"Скопирует: {what}" if what else "Папка не определилась"
+        button = self.buttons[index]
+        if button.action == NEW_FOLDER:
+            text = "Создаст новую папку здесь — останется ввести её имя"
+        else:
+            found = self.system.folder(self.dialog)
+            what = button.text(plan(found[0], found[1], False).name) if found else None
+            text = f"Скопирует: {what}" if what else "Папка не определилась"
         if self.tip is None:
             self.tip = self._popup("Switcher — подсказка")
             self.tip_label = tk.Label(self.tip, justify="left", padx=8, pady=4, borderwidth=1, relief="solid",
@@ -294,6 +299,8 @@ class SaveBarPanel:
         config = self.app.config.save_bar
         notify = self.app.backend.notify
         try:
+            if button.action == NEW_FOLDER:
+                return self._new_folder(dialog)
             found = self.system.folder(dialog)
             if found is None:
                 notify("Не понял, какая папка открыта в окне сохранения: ничего не скопировано.")
@@ -326,6 +333,28 @@ class SaveBarPanel:
             log.exception("save bar button failed")
             notify(f"Панель «Сохранить как»: ошибка — {exc}")
             return None
+
+
+    def _new_folder(self, dialog: int) -> str | None:
+        """The dialog's own «Новая папка»: a folder appears and its name is ready to be typed.
+        Returns the new folder's name ("" when it can't be seen: not a folder on a disk)."""
+        notify = self.app.backend.notify
+        found = self.system.folder(dialog)
+        before = self.system.subfolders(found[0]) if found else set()
+        if not self.system.new_folder(dialog):
+            notify("Не получилось создать новую папку в окне сохранения.")
+            return None
+        if not found:
+            return ""
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            made = self.system.subfolders(found[0]) - before
+            if made:
+                log.info("save bar: new folder %s in %s", sorted(made), found[0])
+                return min(made)
+            time.sleep(0.15)
+        notify(f"В «{found[1]}» новая папка не появилась: возможно, нет прав.")
+        return None
 
 
 def start_save_bar(root, app) -> SaveBarPanel | None:

@@ -16,6 +16,7 @@ from .controller import parse_hotkey
 
 PDF = "PDF"
 Rect = tuple[int, int, int, int]  # left, top, right, bottom (screen pixels)
+COPY, NEW_FOLDER = "copy", "new_folder"  # what a button does
 
 # ready-made colours for the buttons: (name, colour); "" is the usual look (yellow main, grey others)
 PALETTE = (
@@ -67,6 +68,7 @@ class Button:
     hotkey: str = ""
     enabled: bool = True
     color: str = ""  # "#RRGGBB"; "" — the usual look
+    action: str = COPY  # COPY the folder's name, or make a NEW_FOLDER the way «Новая папка» does
 
     def text(self, folder_name: str) -> str:
         """What the button puts on the clipboard: «<prefix><folder><suffix>»."""
@@ -74,7 +76,11 @@ class Button:
 
     def to_dict(self) -> dict:
         return {"label": self.label, "prefix": self.prefix, "suffix": self.suffix, "hotkey": self.hotkey,
-                "enabled": self.enabled, "color": self.color}
+                "enabled": self.enabled, "color": self.color, "action": self.action}
+
+    def what(self) -> str:
+        """What the settings list says the button does."""
+        return "создаёт новую папку" if self.action == NEW_FOLDER else self.text("«папка»")
 
 
 def default_buttons() -> list[dict]:
@@ -86,6 +92,10 @@ def default_buttons() -> list[dict]:
     ]
 
 
+def new_folder_button() -> Button:
+    return Button("Новая папка", hotkey="<ctrl>+<shift>+5", color="#3E63DD", action=NEW_FOLDER)
+
+
 def buttons_of(items) -> list[Button]:
     """The buttons from the settings; whatever a hand-edited config.json got wrong is skipped."""
     found = []
@@ -94,7 +104,8 @@ def buttons_of(items) -> list[Button]:
             continue
         found.append(Button(str(item["label"]).strip(), str(item.get("prefix", "") or ""),
                             str(item.get("suffix", "") or ""), str(item.get("hotkey", "") or "").strip(),
-                            bool(item.get("enabled", True)), normal_color(item.get("color"))))
+                            bool(item.get("enabled", True)), normal_color(item.get("color")),
+                            NEW_FOLDER if item.get("action") == NEW_FOLDER else COPY))
     return found
 
 

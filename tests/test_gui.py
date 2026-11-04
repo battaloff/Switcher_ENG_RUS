@@ -510,6 +510,7 @@ class FakeDialogs:
         self.dialogs = {77: Geometry((100, 100, 1500, 900), (108, 160, 1492, 196), 330, 1.0, "#191919")}
         self.folders = {77: (r"\\srv\f\2026\НОЯБРЬ\2,11,26\готов\Заказ   (id_1)", "Заказ   (id_1)")}
         self.copied, self.made, self.went, self.shown, self.carets = [], [], [], {}, []
+        self.new_folders, self.subs, self.folder_made = [], {"PDF"}, True
         self.fail = None
 
     def foreground(self):
@@ -544,6 +545,15 @@ class FakeDialogs:
 
     def copy(self, text):
         self.copied.append(text)
+
+    def new_folder(self, hwnd):
+        self.new_folders.append(hwnd)
+        if self.folder_made:
+            self.subs.add("Новая папка")
+        return True
+
+    def subfolders(self, path):
+        return set(self.subs)
 
     def caret_to_start(self, hwnd):
         self.carets.append(hwnd)
@@ -595,7 +605,7 @@ def test_the_panel_shows_on_a_save_dialog_only(bar):
     assert not dialogs.shown and bar.dialog == 0  # nothing in front
     dialogs.front = 77
     bar.update()
-    assert bar.dialog == 77 and bar.where == "inside" and dialogs.shown[bar.hwnd][0] == 330
+    assert bar.dialog == 77 and bar.where == "inside" and dialogs.shown[bar.hwnd][0] == 330 + 16  # the gap
     assert [b.label for b in bar.buttons] == ["Копировать имя папки", "PANCH", "PANCH + ЗАГИБ", "ОБЖИГ"]
     assert app.backend.save_bar_dialog == 77
     assert app.backend.save_bar_keys[(frozenset({"ctrl", "shift"}), 0x32)] == 1
@@ -614,7 +624,7 @@ def test_the_panel_shows_on_a_save_dialog_only(bar):
     moved = dialogs.dialogs[77]
     dialogs.dialogs[77] = type(moved)((150, 120, 1550, 920), (158, 180, 1542, 216), 380, 1.0, "#191919")
     bar.update()  # the dialog was dragged: the panel follows at once
-    assert dialogs.shown[bar.hwnd][0] == 380
+    assert dialogs.shown[bar.hwnd][0] == 380 + 16
 
 
 def test_a_button_copies_the_folder_name_and_opens_pdf(bar):
@@ -662,6 +672,25 @@ def test_buttons_are_drawn_in_their_colours(bar):
     usual = savebar_ui.OTHER[savebar_ui.ctk.get_appearance_mode() == "Dark"]
     assert [w.cget("fg_color") for w in widgets[:4]] == ["#3E63DD", usual, "#30A46C", usual]
     assert widgets[0].cget("text_color") == "#FFFFFF"  # white reads better on blue
+
+
+def test_the_gap_after_new_folder(bar):
+    dialogs, app = bar.dialogs, bar.app_
+    dialogs.front = 77
+    app.config.save_bar.gap = 60
+    bar.update()
+    assert dialogs.shown[bar.hwnd][0] == 330 + 60
+
+
+def test_a_new_folder_button(bar):
+    from switcher.savebar import new_folder_button
+
+    dialogs, app = bar.dialogs, bar.app_
+    assert bar.run(new_folder_button(), 77) == "Новая папка"
+    assert dialogs.new_folders == [77] and dialogs.copied == [] and dialogs.carets == []  # its name is being typed
+    dialogs.folder_made = False  # no rights there: the folder never shows up
+    bar.run(new_folder_button(), 77)
+    assert "новая папка не появилась" in app.notes[-1]
 
 
 def test_errors_are_told_even_with_notifications_off(bar):
@@ -719,3 +748,25 @@ def test_a_colour_is_chosen_for_a_button(window):
     window.save_button_tree.selection_set("3")
     window.toggle_save_button()  # switching it off keeps the colour
     assert window.app.saved[-1].save_bar.buttons[3] == {**taken[0].to_dict(), "enabled": False}
+
+
+def test_a_button_for_a_new_folder_is_set_up_in_its_dialog(window):
+    from switcher.savebar import NEW_FOLDER
+    from switcher.savebar_dialogs import ACTION_TITLES, ButtonDialog
+
+    window.show("savebar")
+    window.var_bar_gap.set(40)
+    window.save()
+    assert window.app.saved[-1].save_bar.gap == 40
+    taken = []
+    dialog = ButtonDialog(window, lambda button: taken.append(button))
+    ROOT.update()
+    dialog.actions.set(ACTION_TITLES[NEW_FOLDER])
+    dialog._action_chosen(ACTION_TITLES[NEW_FOLDER])
+    assert dialog.label.get() == "Новая папка" and dialog.prefix.cget("state") == "disabled"
+    assert "Создаст новую папку" in dialog.preview.cget("text")
+    dialog.pick("#3E63DD")
+    dialog.done()
+    assert taken[0].action == NEW_FOLDER and taken[0].label == "Новая папка" and taken[0].color == "#3E63DD"
+    assert window.put_save_button(None, taken[0]) is None
+    assert window.save_button_tree.item("4")["values"][2] == "создаёт новую папку"
