@@ -8,7 +8,6 @@ give a fake one.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import threading
 import time
@@ -179,6 +178,7 @@ class SaveBarPanel:
             scaling = 1.0
         scaling = scaling or 1.0
         font = ctk.CTkFont(family="Segoe UI", size=12)
+        pad = round(6 * geometry.scale)  # between buttons, in real pixels like the window's
         for index, button in enumerate(buttons):
             main = index == 0
             look = button_look(button, main, dark)
@@ -186,16 +186,20 @@ class SaveBarPanel:
                 self.window, text=button.label, width=round((font.measure(button.label) + 22 * scaling) / scaling),
                 height=round(height / scaling), corner_radius=4, font=font, bg_color=background,
                 command=lambda i=index: self.press(i), **look)
-            widget.pack(side="left", padx=(0 if main else round(6 / scaling), 0), pady=0)
+            widget.pack(side="left", padx=(0 if main else pad, 0), pady=0)
             widget.bind("<Enter>", lambda _e, i=index: self._show_tip(i), add="+")
             widget.bind("<Leave>", lambda _e: self._hide_tip(), add="+")
         self.window.update_idletasks()
         self.size = (self.window.winfo_reqwidth(), self.window.winfo_reqheight())
         self.window.geometry(f"{self.size[0]}x{self.size[1]}+-32000+-32000")
         self.window.update_idletasks()
-        widgets = self.window.winfo_children()  # laid out now that the window has its size
-        self.gap_points = [(left.winfo_x() + left.winfo_width() + right.winfo_x()) // 2
-                           for left, right in itertools.pairwise(widgets)]
+        # where the gaps are, from the buttons' own widths (Tk tells no positions in a hidden window)
+        self.gap_points, x = [], 0
+        for index, widget in enumerate(self.window.winfo_children()):
+            if index:
+                self.gap_points.append(x + pad // 2)
+                x += pad
+            x += widget.winfo_reqwidth()
         self.buttons = list(buttons)
         self._built = key
         self.position = None

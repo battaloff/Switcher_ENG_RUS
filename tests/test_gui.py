@@ -672,6 +672,10 @@ def test_buttons_are_drawn_in_their_colours(bar):
     usual = savebar_ui.OTHER[savebar_ui.ctk.get_appearance_mode() == "Dark"]
     assert [w.cget("fg_color") for w in widgets[:4]] == ["#3E63DD", usual, "#30A46C", usual]
     assert widgets[0].cget("text_color") == "#FFFFFF"  # white reads better on blue
+    # the middle of each gap between buttons (the Windows check looks there for the dialog behind)
+    first = widgets[0].winfo_reqwidth()
+    assert len(bar.gap_points) == 3 and bar.gap_points[0] == first + 3  # 4 buttons, 3 gaps
+    assert bar.gap_points[1] == first + 6 + widgets[1].winfo_reqwidth() + 3
 
 
 def test_the_gap_after_new_folder(bar):
