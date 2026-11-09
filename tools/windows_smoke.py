@@ -234,9 +234,13 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
             def differ(a, b) -> int:
                 return sum(abs(int(a[i:i + 2], 16) - int(b[i:i + 2], 16)) for i in (1, 3, 5))
 
-            clear = bool(gap and row) and differ(gap, row) < 30
-            print(f"{'OK  ' if clear else 'FAIL'} between the buttons the dialog shows through: gap {gap}, "
-                  f"the row beside the panel {row}")
+            key, alpha, flags = wintypes.DWORD(), ctypes.c_ubyte(), wintypes.DWORD()
+            layered = bool(user32.GetLayeredWindowAttributes(panel.hwnd, ctypes.byref(key), ctypes.byref(alpha),
+                                                             ctypes.byref(flags))) and bool(flags.value & 1)
+            clear = layered and bool(gap and row) and differ(gap, row) < 30
+            print(f"{'OK  ' if clear else 'FAIL'} between the buttons the dialog shows through: see-through colour "
+                  f"set {layered} (key {key.value:06x}), gap {gap} at {panel.gap_points[0]}, the row beside the "
+                  f"panel {row}")
             results.append(clear)
 
     def hotkey(digit: str) -> None:

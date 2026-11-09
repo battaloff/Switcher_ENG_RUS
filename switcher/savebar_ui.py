@@ -79,6 +79,7 @@ class SaveBarPanel:
         self._checked: dict[int, tuple[bool, float, float]] = {}  # hwnd → (save dialog, first seen, last look)
         self._layout: tuple[int, tuple, float, Geometry] | None = None
         self.gap_points: list[int] = []   # the middle of each gap between buttons, from the panel's left
+        self._see_through = ""
         self._work = threading.Lock()
         self.tip: tk.Toplevel | None = None
         self.tip_hwnd = 0
@@ -164,18 +165,14 @@ class SaveBarPanel:
         key = (tuple(buttons), dark, height, background)
         if key == self._built and self.window is not None:
             return
-        if self._built is not None and self.window is not None:
-            # new buttons (edited in the settings): a fresh window, made the way the first one was
+        if self.window is not None and (self._built is not None or self._see_through != background):
+            # new buttons (edited in the settings) or another theme: a fresh window, made the way the
+            # first one was
             self.system.hide(self.hwnd)
             self.window.destroy()
             self.window, self.hwnd, self.position = None, 0, None
             log.info("save bar: buttons changed: %s", ", ".join(b.label for b in buttons))
-        self._create_window()
-        self.window.configure(background=background)
-        try:  # Windows: this colour is not drawn at all — the dialog shows through
-            self.window.attributes("-transparentcolor", background)
-        except tk.TclError:
-            pass  # not on Windows (the tests)
+        self._create_window(background)
         try:  # how much CustomTkinter enlarges its widgets on this screen (sizes here are real pixels)
             scaling = ctk.ScalingTracker.get_window_dpi_scaling(self.window) * ctk.ScalingTracker.widget_scaling
         except (KeyError, AttributeError, tk.TclError):
@@ -194,27 +191,36 @@ class SaveBarPanel:
             widget.bind("<Leave>", lambda _e: self._hide_tip(), add="+")
         self.window.update_idletasks()
         self.size = (self.window.winfo_reqwidth(), self.window.winfo_reqheight())
-        widgets = self.window.winfo_children()
-        self.gap_points = [(left.winfo_x() + left.winfo_width() + right.winfo_x()) // 2
-                           for left, right in itertools.pairwise(widgets)]
         self.window.geometry(f"{self.size[0]}x{self.size[1]}+-32000+-32000")
         self.window.update_idletasks()
+        widgets = self.window.winfo_children()  # laid out now that the window has its size
+        self.gap_points = [(left.winfo_x() + left.winfo_width() + right.winfo_x()) // 2
+                           for left, right in itertools.pairwise(widgets)]
         self.buttons = list(buttons)
         self._built = key
         self.position = None
 
-    def _create_window(self) -> None:
+    def _create_window(self, background: str | None = None) -> None:
         if self.window is not None:
             return
-        self.window = self._popup("Switcher — панель «Сохранить как»")
+        background = background or SEE_THROUGH[ctk.get_appearance_mode() == "Dark"]
+        self.window = self._popup("Switcher — панель «Сохранить как»", background)
+        self._see_through = background
         self.hwnd = self._popup_ready(self.window)
 
-    def _popup(self, title: str) -> tk.Toplevel:
+    def _popup(self, title: str, see_through: str | None = None) -> tk.Toplevel:
         window = tk.Toplevel(self.root)
         window.withdraw()
         window.overrideredirect(True)
         window.title(title)
         window.geometry("1x1+-32000+-32000")
+        if see_through:
+            window.configure(background=see_through)
+            try:  # Windows: this colour is not drawn at all — the dialog shows through. Set before the
+                # window gets its other styles (never the focus, on top), which Tk might redo otherwise
+                window.attributes("-transparentcolor", see_through)
+            except tk.TclError:
+                pass  # not on Windows (the tests)
         return window
 
     def _popup_ready(self, window: tk.Toplevel) -> int:
