@@ -189,7 +189,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     front = user32.GetForegroundWindow()
     note("Save bar", f"dialog {geometry.dialog if geometry else None}, row {geometry.row if geometry else None}, "
                      f"after {geometry.after_x if geometry else None}, scale {geometry.scale if geometry else None}, "
-                     f"colour {geometry.color if geometry else None}; panel at {panel.position if panel else None}, "
+                     f"panel at {panel.position if panel else None}, "
                      f"size {panel.size if panel else None}, {panel.where if panel else '-'}")
     ok = shown and front == dialog
     print(f"{'OK  ' if ok else 'FAIL'} the panel shows on the save dialog ({panel.where if panel else '-'}) and the "
@@ -226,6 +226,18 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
               f"«Новая папка»: {panel.where} at {panel.position}, the text ends at "
               f"{geometry.row[0] + ink if ink is not None else 'not seen'}")
         results.append(inside and after and front == user32.GetForegroundWindow())
+        if inside and panel.gap_points:
+            y = panel.position[1] + panel.size[1] // 2
+            gap = color_at(panel.position[0] + panel.gap_points[0], y)
+            row = color_at(panel.position[0] + panel.size[0] + round(30 * geometry.scale), y)
+
+            def differ(a, b) -> int:
+                return sum(abs(int(a[i:i + 2], 16) - int(b[i:i + 2], 16)) for i in (1, 3, 5))
+
+            clear = bool(gap and row) and differ(gap, row) < 30
+            print(f"{'OK  ' if clear else 'FAIL'} between the buttons the dialog shows through: gap {gap}, "
+                  f"the row beside the panel {row}")
+            results.append(clear)
 
     def hotkey(digit: str) -> None:
         user.press(Key.ctrl)

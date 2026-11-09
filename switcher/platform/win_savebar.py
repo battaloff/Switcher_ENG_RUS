@@ -369,20 +369,17 @@ class WindowsSaveDialogs:
         if row is None or not 16 * scale <= row[3] - row[1] <= 90 * scale:
             return Geometry(dialog, None, None, scale)
         after_x = row[0] + _command_width(scale)  # where the «Новая папка» button ends
-        color = None
-        if measure:  # the panel is not over the row: see where «Новая папка» really ends
-            color = color_at(row[2] - round(140 * scale), (row[1] + row[3]) // 2)
-            if hwnd not in self._ink:
-                width = min(row[2] - row[0], round(700 * scale))
-                height = max(4, round(12 * scale))
-                found = ink_end(grab(row[0], (row[1] + row[3] - height) // 2, width, height), width, scale)
-                if found is not None:
-                    self._ink[hwnd] = found
-                    log.info("save bar: «Новая папка» ends %d px into the row (from the captions: %d)", found,
-                             after_x - row[0] - round(NEW_FOLDER_PAD * scale))
+        if measure and hwnd not in self._ink:  # the panel is not over the row: where «Новая папка» really ends
+            width = min(row[2] - row[0], round(700 * scale))
+            height = max(4, round(12 * scale))
+            found = ink_end(grab(row[0], (row[1] + row[3] - height) // 2, width, height), width, scale)
+            if found is not None:
+                self._ink[hwnd] = found
+                log.info("save bar: «Новая папка» ends %d px into the row (from the captions: %d)", found,
+                         after_x - row[0] - round(NEW_FOLDER_PAD * scale))
         if hwnd in self._ink:
             after_x = row[0] + self._ink[hwnd] + round(NEW_FOLDER_PAD * scale)
-        return Geometry(dialog, row, after_x, scale, color)
+        return Geometry(dialog, row, after_x, scale)
 
     def folder(self, hwnd: int) -> tuple[str, str] | None:
         """The folder the dialog shows: (path, name)."""

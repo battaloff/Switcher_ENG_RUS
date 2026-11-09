@@ -8,6 +8,7 @@ give a fake one.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import threading
 import time
@@ -36,7 +37,9 @@ OTHER = ("#FBFBFB", "#2D2D2D")
 OTHER_HOVER = ("#F0F0F0", "#3A3A3A")
 OTHER_BORDER = ("#D1D1D1", "#474747")
 OTHER_TEXT = ("#1B1B1B", "#F2F2F2")
-ROW = ("#F9F9F9", "#191919")           # when the dialog's own colour can't be read
+# the panel's own background: a colour Windows makes see-through (between and around the buttons the
+# dialog itself shows), close to the dialog's row so that the buttons' rounded corners blend in
+SEE_THROUGH = ("#F7F7F8", "#1B1B1C")
 
 
 def button_look(button: Button, main: bool, dark: bool) -> dict:
@@ -75,7 +78,7 @@ class SaveBarPanel:
         self._built: tuple | None = None
         self._checked: dict[int, tuple[bool, float, float]] = {}  # hwnd → (save dialog, first seen, last look)
         self._layout: tuple[int, tuple, float, Geometry] | None = None
-        self._colors: dict[int, str] = {}
+        self.gap_points: list[int] = []   # the middle of each gap between buttons, from the panel's left
         self._work = threading.Lock()
         self.tip: tk.Toplevel | None = None
         self.tip_hwnd = 0
@@ -148,8 +151,6 @@ class SaveBarPanel:
         if geometry is None:
             self._layout = None
             return None
-        if geometry.color and hwnd not in self._colors and self.position is None:
-            self._colors[hwnd] = geometry.color  # read while the panel is not over the row
         self._layout = (hwnd, geometry.dialog, now, geometry)
         return geometry
 
@@ -159,7 +160,7 @@ class SaveBarPanel:
         dark = ctk.get_appearance_mode() == "Dark"
         row_height = geometry.row[3] - geometry.row[1] if geometry.row else round(34 * geometry.scale)
         height = max(22, row_height - round(8 * geometry.scale))
-        background = self._colors.get(dialog) or ROW[dark]
+        background = SEE_THROUGH[dark]
         key = (tuple(buttons), dark, height, background)
         if key == self._built and self.window is not None:
             return
@@ -171,6 +172,10 @@ class SaveBarPanel:
             log.info("save bar: buttons changed: %s", ", ".join(b.label for b in buttons))
         self._create_window()
         self.window.configure(background=background)
+        try:  # Windows: this colour is not drawn at all — the dialog shows through
+            self.window.attributes("-transparentcolor", background)
+        except tk.TclError:
+            pass  # not on Windows (the tests)
         try:  # how much CustomTkinter enlarges its widgets on this screen (sizes here are real pixels)
             scaling = ctk.ScalingTracker.get_window_dpi_scaling(self.window) * ctk.ScalingTracker.widget_scaling
         except (KeyError, AttributeError, tk.TclError):
@@ -189,6 +194,9 @@ class SaveBarPanel:
             widget.bind("<Leave>", lambda _e: self._hide_tip(), add="+")
         self.window.update_idletasks()
         self.size = (self.window.winfo_reqwidth(), self.window.winfo_reqheight())
+        widgets = self.window.winfo_children()
+        self.gap_points = [(left.winfo_x() + left.winfo_width() + right.winfo_x()) // 2
+                           for left, right in itertools.pairwise(widgets)]
         self.window.geometry(f"{self.size[0]}x{self.size[1]}+-32000+-32000")
         self.window.update_idletasks()
         self.buttons = list(buttons)
