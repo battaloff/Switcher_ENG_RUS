@@ -347,10 +347,11 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     existing = pdf / "exists.txt"
     existing.write_text("x", encoding="utf-8")
     name_box = Parts(dialog).file_edit
-    win_savebar.user32.PostMessageW(dialog, 0x0028, name_box, 1)  # the keyboard in the file name box
-    time.sleep(0.3)
+    in_box = dialogs.give_keyboard(dialog, name_box)  # the keyboard in the file name box, as a click would
     win_savebar.set_text(name_box, existing.name)
-    win_savebar.user32.PostMessageW(dialog, 0x0111, 1, Parts(dialog).save_button)  # «Сохранить»
+    note("Save bar", f"before saving over a file: the file name box has the keyboard {in_box}")
+    user.press(Key.enter)  # «Сохранить»
+    user.release(Key.enter)
     deadline = time.time() + 5
     question = 0
     while time.time() < deadline:
@@ -382,12 +383,12 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     (order / "другая папка").mkdir(exist_ok=True)
     dialogs.go_into(dialog, str(order))
     items = Parts(dialog).items
-    if items:
-        win_savebar.user32.PostMessageW(dialog, 0x0028, items, 1)  # the keyboard in the list
-        time.sleep(0.4)
+    in_list = bool(items) and dialogs.give_keyboard(dialog, items)  # the keyboard in the list
+    if in_list:
         user.press(Key.end)  # selects the last item: «другая папка»
         user.release(Key.end)
         time.sleep(0.4)
+    note("Save bar", f"a folder selected in the list: the list has the keyboard {in_list}")
     hotkey("1")
     deadline = time.time() + 6
     while time.time() < deadline and not ((now := dialogs.folder(dialog)) and same(now[0], pdf)):

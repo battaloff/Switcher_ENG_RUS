@@ -16,7 +16,7 @@ import time
 import uuid
 from ctypes import wintypes
 
-from ..savebar import Geometry, Rect, folder_from_address, ink_end
+from ..savebar import Geometry, Rect, folder_from_address, ink_end, settled_ink
 from .win_events import has_file_browser, looks_like_save
 
 log = logging.getLogger(__name__)
@@ -48,6 +48,11 @@ user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctyp
                                 wintypes.UINT)
 user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+user32.SetFocus.argtypes = (wintypes.HWND,)
+user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 user32.GetDC.argtypes = (wintypes.HWND,)
 user32.GetDC.restype = wintypes.HDC
 user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
@@ -375,11 +380,18 @@ class WindowsSaveDialogs:
         if measure and hwnd not in self._ink:  # the panel is not over the row: where «Новая папка» really ends
             width = min(row[2] - row[0], round(700 * scale))
             height = max(4, round(12 * scale))
-            found = ink_end(grab(row[0], (row[1] + row[3] - height) // 2, width, height), width, scale)
-            if found is not None:
-                self._ink[hwnd] = found
-                log.info("save bar: «Новая папка» ends %d px into the row (from the captions: %d)", found,
-                         after_x - row[0] - round(NEW_FOLDER_PAD * scale))
+            expected = after_x - row[0] - round(NEW_FOLDER_PAD * scale)  # from the captions' widths
+            looks: list[int | None] = []
+            for attempt in range(5):  # a slow program draws its dialog bit by bit: look until it agrees
+                if attempt:
+                    time.sleep(0.15)
+                looks.append(ink_end(grab(row[0], (row[1] + row[3] - height) // 2, width, height), width, scale))
+                found = settled_ink(looks, expected)
+                if found is not None:
+                    self._ink[hwnd] = found
+                    break
+            log.info("save bar: «Новая папка» ends %s px into the row (looked %s; from the captions: %d)",
+                     self._ink.get(hwnd, "—"), looks, expected)
         if hwnd in self._ink:
             after_x = row[0] + self._ink[hwnd] + round(NEW_FOLDER_PAD * scale)
         return Geometry(dialog, row, after_x, scale)
@@ -398,21 +410,52 @@ class WindowsSaveDialogs:
             if not os.path.isdir(_long(path)):
                 raise
 
+    def focused(self, hwnd: int) -> int:
+        """The control that has the dialog's keyboard."""
+        from . import windows
+
+        info = windows.GUITHREADINFO(cbSize=ctypes.sizeof(windows.GUITHREADINFO))
+        if not windows.user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(hwnd, None), ctypes.byref(info)):
+            return 0
+        return int(info.hwndFocus or 0)
+
+    def give_keyboard(self, hwnd: int, control: int) -> bool:
+        """Give the dialog's keyboard to ``control``: the dialog's own way, else Windows' (briefly joining
+        the dialog's input, as a click would)."""
+        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, control, 1)
+        for _ in range(6):
+            time.sleep(0.05)
+            if self.focused(hwnd) == control:
+                return True
+        theirs, ours = user32.GetWindowThreadProcessId(hwnd, None), kernel32.GetCurrentThreadId()
+        if theirs and user32.AttachThreadInput(ours, theirs, True):
+            try:
+                user32.SetFocus(control)
+            finally:
+                user32.AttachThreadInput(ours, theirs, False)
+        time.sleep(0.05)
+        return self.focused(hwnd) == control
+
     def go_into(self, hwnd: int, folder: str, timeout: float = 4.0) -> bool:
         """Open ``folder`` in the dialog the way a person would: type it as the file name and press
-        «Сохранить» (a folder is opened, nothing is saved), then put back the name they had typed."""
+        Enter (a folder is opened, nothing is saved), then put back the name they had typed."""
+        from .windows import WindowsBackend
+
         parts = Parts(hwnd)
         if parts.file_edit is None or parts.save_button is None:
             log.info("save bar: no file name box or Save button in the dialog")
             return False
         typed = get_text(parts.file_edit)
         # the keyboard in the file name box first: with a folder selected in the list, «Сохранить»
-        # would open that folder instead of the one typed
-        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, parts.file_edit, 1)
-        time.sleep(0.1)
+        # opens that folder instead of the one typed
+        in_box = self.give_keyboard(hwnd, parts.file_edit)
         if not set_text(parts.file_edit, folder.rstrip("\\") + "\\"):
             return False
-        user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)
+        if in_box and int(user32.GetForegroundWindow() or 0) == hwnd:
+            WindowsBackend._send([(0x0D, 0, 0), (0x0D, 0, 0x0002)])  # Enter, as typed in the box
+        else:
+            log.info("save bar: the file name box did not take the keyboard; pressing «Сохранить» instead")
+            user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)
         arrived = False
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and user32.IsWindow(hwnd):
@@ -433,7 +476,7 @@ class WindowsSaveDialogs:
         edit = Parts(hwnd).file_edit
         if edit is None:
             return
-        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, edit, 1)  # the dialog moves its focus there (and selects all)
+        self.give_keyboard(hwnd, edit)  # (the dialog may select the whole name when the box gets the keyboard)
         user32.PostMessageW(edit, EM_SETSEL, 0, 0)
         time.sleep(0.25)
         # a dialog that has just opened a folder may select the whole name once more a moment later; but
@@ -452,8 +495,7 @@ class WindowsSaveDialogs:
         items = Parts(hwnd).items
         if items is None:
             return False
-        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, items, 1)  # the keyboard in the list of files
-        time.sleep(0.15)
+        self.give_keyboard(hwnd, items)  # the keyboard in the list of files
         if int(user32.GetForegroundWindow() or 0) != hwnd:
             return False
         ctrl, shift, n, up = 0x11, 0x10, 0x4E, 0x0002

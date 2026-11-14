@@ -203,6 +203,14 @@ def hotkey_map(buttons: list[Button]) -> dict[tuple[frozenset, int], int]:
 
 # -- where the panel goes ----------------------------------------------------------------------
 
+def settled_ink(looks: list[int | None], expected: int) -> int | None:
+    """Where «Новая папка» ends, once the screen agrees with itself: the last two looks within a few
+    pixels of each other (a dialog still being drawn shows less).  A far shorter end than the captions
+    take (``expected``) is a half-drawn row, not the end."""
+    if len(looks) < 2 or looks[-1] is None or looks[-2] is None or abs(looks[-1] - looks[-2]) > 3:
+        return None
+    return looks[-1] if looks[-1] >= 0.6 * expected else None
+
 def _differ(a: int, b: int) -> int:
     return abs((a >> 16) - (b >> 16)) + abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)) + abs((a & 0xFF) - (b & 0xFF))
 

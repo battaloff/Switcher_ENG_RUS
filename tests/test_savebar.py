@@ -18,6 +18,7 @@ from switcher.savebar import (
     normal_color,
     place_bar,
     plan,
+    settled_ink,
     shown_buttons,
     text_on,
 )
@@ -122,6 +123,15 @@ def test_where_new_folder_ends_is_seen_on_the_screen():
     assert ink_end(pixels, width, 1.0) == 184
     assert ink_end([bg] * (width * height), width, 1.0) is None  # not drawn yet
     assert ink_end([], 0, 1.0) is None
+
+
+def test_where_new_folder_ends_is_taken_once_the_screen_agrees():
+    assert settled_ink([150], 160) is None  # one look is not enough
+    assert settled_ink([150, 152], 160) == 152
+    assert settled_ink([20, 150], 160) is None  # still being drawn
+    assert settled_ink([20, 150, 151], 160) == 151
+    assert settled_ink([15, 15], 160) is None  # a half-drawn row: «Упор…» only, far less than the captions
+    assert settled_ink([None, None], 160) is None
 
 
 def test_the_settings_keep_the_buttons(tmp_path):
