@@ -48,8 +48,8 @@ WM_SETTEXT, WM_GETTEXT, EM_SETSEL = 0x000C, 0x000D, 0x00B1
 ON_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 
 
-def _escape(text: str) -> str:
-    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")[:4000]
+def _escape(text: str, limit: int = 4000) -> str:
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")[:limit]
 
 
 class _Annotated:
@@ -406,7 +406,26 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     return panel
 
 
+HANG_AFTER = 15 * 60  # seconds: the whole check takes a few minutes; a hang must not eat the job's time
+
+
+def report_hang() -> None:
+    """Where every thread stands, as an annotation, then stop: a hung step leaves nothing to read."""
+    import traceback
+
+    names = {thread.ident: thread.name for thread in threading.enumerate()}
+    stacks = [f"thread {names.get(ident, ident)}:\n" + "".join(traceback.format_stack(frame)[-10:])
+              for ident, frame in sys._current_frames().items()]
+    print(f"FAIL the check hung for {HANG_AFTER // 60} minutes; where the threads stand is in the next annotation")
+    sys.stdout.write(f"::error title=Notepad E2E hung::{_escape(chr(10).join(stacks), 30000)}\n")
+    sys.stdout.flush()
+    os._exit(1)
+
+
 def main() -> int:
+    watchdog = threading.Timer(HANG_AFTER, report_hang)
+    watchdog.daemon = True
+    watchdog.start()
     for klid in ("00000409", "00000419"):  # make sure both layouts are loaded
         user32.LoadKeyboardLayoutW(klid, 0)
     notepad = subprocess.Popen(["notepad.exe"])
