@@ -78,6 +78,8 @@ ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 
 WM_GETTEXT, WM_SETTEXT, WM_COMMAND, WM_NEXTDLGCTL = 0x000D, 0x000C, 0x0111, 0x0028
 EM_GETSEL, EM_SETSEL = 0x00B0, 0x00B1
+VK_RETURN, VK_ESCAPE, VK_F4 = 0x0D, 0x1B, 0x73
+KEYUP, UNICODE = 0x0002, 0x0004  # SendInput: a key let go; a character rather than a key
 SMTO_ABORTIFHUNG = 0x0002
 IDOK = 1
 FILE_NAME_BOX = 1148  # cmb13: the file name box of a file dialog
@@ -149,6 +151,14 @@ def get_text(hwnd, size: int = 2048) -> str:
                                       ctypes.byref(result)):
         return ""
     return buf.value
+
+
+def send_message(hwnd, message: int, wparam: int, lparam: int) -> int:
+    """SendMessage to a control of another program; never waits on one that hangs."""
+    result = ctypes.c_size_t()
+    user32.SendMessageTimeoutW(hwnd, message, wparam & 0xFFFFFFFFFFFFFFFF, lparam, SMTO_ABORTIFHUNG, 500,
+                               ctypes.byref(result))
+    return result.value
 
 
 def set_text(hwnd, text: str) -> bool:
@@ -366,6 +376,7 @@ class WindowsSaveDialogs:
 
     def __init__(self):
         self._ink: dict[int, int] = {}  # dialog → where its «Новая папка» ends, from the row's left
+        self.last_route = ""  # how go_into opened the folder last (for the log and the Windows check)
 
     def geometry(self, hwnd: int, measure: bool = True) -> Geometry | None:
         if not user32.IsWindowVisible(hwnd) or not user32.IsWindowEnabled(hwnd):
@@ -437,39 +448,89 @@ class WindowsSaveDialogs:
         return self.focused(hwnd) == control
 
     def go_into(self, hwnd: int, folder: str, timeout: float = 4.0) -> bool:
-        """Open ``folder`` in the dialog the way a person would: type it as the file name and press
-        Enter (a folder is opened, nothing is saved), then put back the name they had typed."""
-        from .windows import WindowsBackend
-
+        """Open ``folder`` in the dialog the way a person would, typing on the keyboard: in the address
+        bar (the file name stays as it is, and a folder selected in the list does not matter), else as
+        the file name followed by Enter (then the name typed before is put back)."""
         parts = Parts(hwnd)
-        if parts.file_edit is None or parts.save_button is None:
-            log.info("save bar: no file name box or Save button in the dialog")
+        if parts.file_edit is None:
+            log.info("save bar: no file name box in the dialog")
             return False
+        target = folder.rstrip("\\") + "\\"
+        self.last_route = ""
+        if parts.items is not None and self._type_in_address_bar(hwnd, parts.items, target):
+            if self._arrives(hwnd, folder, timeout):
+                self.last_route = "address bar"
+                return True
+            self._press([VK_ESCAPE])  # whatever is left open in the address bar
         typed = get_text(parts.file_edit)
-        # the keyboard in the file name box first: with a folder selected in the list, «Сохранить»
-        # opens that folder instead of the one typed
-        in_box = self.give_keyboard(hwnd, parts.file_edit)
-        if not set_text(parts.file_edit, folder.rstrip("\\") + "\\"):
+        if self.give_keyboard(hwnd, parts.file_edit) and self._in_front(hwnd):
+            send_message(parts.file_edit, EM_SETSEL, 0, -1)  # typing replaces the whole name
+            self._type(target)
+            self._press([VK_RETURN])
+            self.last_route = "file name box"
+        else:  # no keyboard for the box: the old way, fine while nothing is selected in the list
+            set_text(parts.file_edit, target)
+            if parts.save_button is not None:
+                user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)
+            self.last_route = "Save button"
+        arrived = self._arrives(hwnd, folder, timeout)
+        if user32.IsWindow(hwnd):
+            set_text(Parts(hwnd).file_edit or parts.file_edit, typed)
+        if not arrived:
+            log.warning("save bar: the dialog did not open %s (%s)", folder, self.last_route)
+            self.last_route += ": did not arrive"
+        return arrived
+
+    def _in_front(self, hwnd: int) -> bool:
+        return int(user32.GetForegroundWindow() or 0) == hwnd
+
+    def _type_in_address_bar(self, hwnd: int, items: int, text: str) -> bool:
+        """F4 from the list of files opens the address bar for typing; type ``text`` there and Enter."""
+        if not self.give_keyboard(hwnd, items) or not self._in_front(hwnd):
             return False
-        if in_box and int(user32.GetForegroundWindow() or 0) == hwnd:
-            WindowsBackend._send([(0x0D, 0, 0), (0x0D, 0, 0x0002)])  # Enter, as typed in the box
-        else:
-            log.info("save bar: the file name box did not take the keyboard; pressing «Сохранить» instead")
-            user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)
-        arrived = False
+        self._press([VK_F4])
+        deadline = time.monotonic() + 1.0
+        edit = 0
+        while time.monotonic() < deadline and not edit:
+            time.sleep(0.05)
+            focused = self.focused(hwnd)
+            if focused and _class(focused) == "Edit" and "Address Band Root" in (
+                    _class(a) for a in _ancestors(focused, hwnd)):
+                edit = focused
+        if not edit or not self._in_front(hwnd):
+            if self.focused(hwnd) != items:
+                self._press([VK_ESCAPE])
+            return False
+        send_message(edit, EM_SETSEL, 0, -1)
+        self._type(text)
+        self._press([VK_RETURN])
+        return True
+
+    def _arrives(self, hwnd: int, folder: str, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and user32.IsWindow(hwnd):
             time.sleep(0.05)
             now = self.folder(hwnd)
             if now and _same(now[0], folder):
-                arrived = True
-                break
-        if user32.IsWindow(hwnd):
-            edit = Parts(hwnd).file_edit or parts.file_edit
-            set_text(edit, typed)
-        if not arrived:
-            log.warning("save bar: the dialog did not open %s", folder)
-        return arrived
+                return True
+        return False
+
+    @staticmethod
+    def _press(keys: list[int]) -> None:
+        from .windows import WindowsBackend
+
+        WindowsBackend._send([event for vk in keys for event in ((vk, 0, 0), (vk, 0, KEYUP))])
+
+    @staticmethod
+    def _type(text: str) -> None:
+        """Type ``text`` as characters (whatever the keyboard layout), tagged as Switcher's own keys."""
+        from .windows import WindowsBackend
+
+        units = text.encode("utf-16-le")
+        codes = [int.from_bytes(units[i:i + 2], "little") for i in range(0, len(units), 2)]
+        events = [event for code in codes for event in ((0, code, UNICODE), (0, code, UNICODE | KEYUP))]
+        for start in range(0, len(events), 200):
+            WindowsBackend._send(events[start:start + 200])
 
     def caret_to_start(self, hwnd: int) -> None:
         """The keyboard in the file name box, the caret before the name (nothing selected)."""

@@ -260,7 +260,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     copied, now, kept = pyperclip.paste(), dialogs.folder(dialog), file_name()
     ok = copied == order.name and pdf.is_dir() and now is not None and same(now[0], pdf) and kept == typed
     print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+1 copies the folder's name and opens «PDF»: copied {copied!r}, "
-          f"PDF made {pdf.is_dir()}, dialog in {now!r}, file name {kept!r}")
+          f"PDF made {pdf.is_dir()}, dialog in {now!r}, file name {kept!r}, by the {panel.system.last_route}")
     results.append(ok)
 
     from switcher.platform.windows import GUITHREADINFO
@@ -346,10 +346,15 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     # question is not taken for a save dialog (its title says «сохранение»)
     existing = pdf / "exists.txt"
     existing.write_text("x", encoding="utf-8")
+    dialogs.go_into(dialog, str(order))  # in and out again: nothing stays selected in the list
+    dialogs.go_into(dialog, str(pdf))
+    time.sleep(0.5)
     name_box = Parts(dialog).file_edit
     in_box = dialogs.give_keyboard(dialog, name_box)  # the keyboard in the file name box, as a click would
-    win_savebar.set_text(name_box, existing.name)
-    note("Save bar", f"before saving over a file: the file name box has the keyboard {in_box}")
+    win_savebar.send_message(name_box, 0x00B1, 0, -1)  # select the whole name: typing replaces it
+    dialogs._type(existing.name)
+    note("Save bar", f"before saving over a file: the file name box has the keyboard {in_box}, "
+                     f"the dialog in {dialogs.folder(dialog)!r} ({dialogs.last_route})")
     user.press(Key.enter)  # «Сохранить»
     user.release(Key.enter)
     deadline = time.time() + 5
@@ -396,7 +401,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     now = dialogs.folder(dialog)
     ok = bool(items) and now is not None and same(now[0], pdf)
     print(f"{'OK  ' if ok else 'FAIL'} with a folder selected in the list the button still opens «PDF»: "
-          f"dialog in {now!r}")
+          f"dialog in {now!r}, by the {panel.system.last_route}")
     results.append(ok)
     return panel
 
