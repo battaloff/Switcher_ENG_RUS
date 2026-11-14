@@ -348,7 +348,10 @@ class WindowsSaveDialogs:
         return int(user32.GetForegroundWindow() or 0)
 
     def is_save_dialog(self, hwnd: int) -> bool:
-        return _class(hwnd) == "#32770" and looks_like_save(hwnd) and has_file_browser(hwnd)
+        """A dialog for saving with its file browser and file name box: not «Подтвердить сохранение
+        в виде» (it says «сохранение» but is a question over the dialog)."""
+        return _class(hwnd) == "#32770" and looks_like_save(hwnd) and has_file_browser(hwnd) \
+            and Parts(hwnd).file_edit is not None
 
     def alive(self, hwnd: int) -> bool:
         return bool(user32.IsWindow(hwnd))

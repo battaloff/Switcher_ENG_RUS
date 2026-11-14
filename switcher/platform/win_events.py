@@ -42,7 +42,9 @@ user32.GetMessageW.restype = wintypes.BOOL
 user32.PostThreadMessageW.argtypes = (wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
-SHELL_VIEWS = {"DirectUIHWND", "SHELLDLL_DefView", "DUIViewWndClassName"}
+# a file browser: the shell view (old dialogs) or its host (Vista and later).  Not a bare DirectUIHWND:
+# Windows 11 draws message boxes such as «Подтвердить сохранение в виде» with one too
+SHELL_VIEWS = {"SHELLDLL_DefView", "DUIViewWndClassName"}
 WM_GETTEXT, SMTO_ABORTIFHUNG = 0x000D, 0x0002
 user32.SendMessageTimeoutW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT,
                                        wintypes.UINT, ctypes.POINTER(ctypes.c_size_t))

@@ -341,6 +341,40 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     user.press(Key.esc)  # keep the name it got
     user.release(Key.esc)
     time.sleep(0.5)
+
+    # «Подтвердить сохранение в виде» over the dialog: the panel goes away while it is open, and the
+    # question is not taken for a save dialog (its title says «сохранение»)
+    existing = pdf / "exists.txt"
+    existing.write_text("x", encoding="utf-8")
+    name_box = Parts(dialog).file_edit
+    win_savebar.set_text(name_box, existing.name)
+    win_savebar.user32.PostMessageW(dialog, 0x0111, 1, Parts(dialog).save_button)  # «Сохранить»
+    deadline = time.time() + 5
+    question = 0
+    while time.time() < deadline:
+        front = int(user32.GetForegroundWindow() or 0)
+        if front and front != dialog and class_name(front) == "#32770":
+            question = front
+            break
+        time.sleep(0.1)
+    time.sleep(1.0)
+    hidden = bool(question) and panel.dialog == 0 and not dialogs.visible(panel.hwnd)
+    taken = bool(question) and dialogs.is_save_dialog(question)
+    title = ctypes.create_unicode_buffer(256)
+    if question:
+        user32.GetWindowTextW(question, title, 256)
+    print(f"{'OK  ' if hidden and not taken else 'FAIL'} a question over the dialog ({title.value!r}): the panel "
+          f"is hidden {hidden}, the question taken for a save dialog {taken}")
+    results.append(hidden and not taken)
+    if question:
+        user.press(Key.esc)  # «Нет»: nothing is replaced
+        user.release(Key.esc)
+    deadline = time.time() + 4
+    while time.time() < deadline and not (panel.dialog == dialog and dialogs.visible(panel.hwnd)):
+        time.sleep(0.1)
+    back = panel.dialog == dialog and dialogs.visible(panel.hwnd)
+    print(f"{'OK  ' if back else 'FAIL'} the panel comes back when the question is answered")
+    results.append(back)
     return panel
 
 
