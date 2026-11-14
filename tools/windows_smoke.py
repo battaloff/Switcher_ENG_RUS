@@ -162,6 +162,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     note("Save bar", f"address {get_text(Parts(dialog).address) if Parts(dialog).address else None!r}; "
                      f"file name {typed!r}")
     moved = dialogs.go_into(dialog, str(order))
+    note("Save bar", f"the dialog opened the folder by the {dialogs.last_route}")
     folder = dialogs.folder(dialog)
     kept = file_name()
     ok = moved and folder is not None and same(folder[0], order) and kept == typed and bool(typed)
@@ -267,7 +268,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
 
     def caret():
         edit = Parts(dialog).file_edit
-        found = user32.SendMessageW(edit, 0x00B0, 0, 0) if edit else -1  # EM_GETSEL
+        found = win_savebar.send_message(edit, 0x00B0, 0, 0) if edit else -1  # EM_GETSEL
         info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
         user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(dialog, None), ctypes.byref(info))
         return (found & 0xFFFF, (found >> 16) & 0xFFFF), bool(edit) and info.hwndFocus == edit
@@ -406,7 +407,7 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     return panel
 
 
-HANG_AFTER = 15 * 60  # seconds: the whole check takes a few minutes; a hang must not eat the job's time
+HANG_AFTER = 6 * 60  # seconds: the whole check takes two or three minutes; ci_notepad_check.ps1 stops it at 8
 
 
 def report_hang() -> None:

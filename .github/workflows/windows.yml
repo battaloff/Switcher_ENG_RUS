@@ -106,17 +106,11 @@ jobs:
           name: screenshots
           path: screenshots/*.png
 
+      # each part has a time limit and its output is kept: a hang used to take the whole job with it
       - name: Typing into Notepad (end-to-end)
         shell: pwsh
-        run: |
-          $languages = Get-WinUserLanguageList
-          $languages.Add("ru-RU")
-          Set-WinUserLanguageList $languages -Force
-          # AutoHotkey, for the scripts manager and for keys typed by a script
-          choco install autohotkey --no-progress -y
-          if ($LASTEXITCODE -in 0, 3010) { $env:SWITCHER_EXPECT_AHK = "1" }
-          else { Write-Host "::warning::AutoHotkey could not be installed: its checks are skipped" }
-          python tools/windows_smoke.py
+        timeout-minutes: 20
+        run: ./tools/ci_notepad_check.ps1
 
       - name: Publish release
         if: env.PUBLISH == '1'

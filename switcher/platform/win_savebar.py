@@ -49,6 +49,8 @@ user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctyp
 user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
 user32.SetFocus.argtypes = (wintypes.HWND,)
+user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
@@ -79,6 +81,8 @@ ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 WM_GETTEXT, WM_SETTEXT, WM_COMMAND, WM_NEXTDLGCTL = 0x000D, 0x000C, 0x0111, 0x0028
 EM_GETSEL, EM_SETSEL = 0x00B0, 0x00B1
 VK_RETURN, VK_ESCAPE, VK_F4 = 0x0D, 0x1B, 0x73
+MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift, Ctrl, Alt, both Win keys
+CB_SHOWDROPDOWN = 0x014F
 KEYUP, UNICODE = 0x0002, 0x0004  # SendInput: a key let go; a character rather than a key
 SMTO_ABORTIFHUNG = 0x0002
 IDOK = 1
@@ -448,22 +452,24 @@ class WindowsSaveDialogs:
         return self.focused(hwnd) == control
 
     def go_into(self, hwnd: int, folder: str, timeout: float = 4.0) -> bool:
-        """Open ``folder`` in the dialog the way a person would, typing on the keyboard: in the address
-        bar (the file name stays as it is, and a folder selected in the list does not matter), else as
-        the file name followed by Enter (then the name typed before is put back)."""
+        """Open ``folder`` in the dialog: through its address bar (the file name is not touched, and a
+        folder selected in the list does not matter), else typed as the file name and Enter (then the
+        name typed before is put back)."""
         parts = Parts(hwnd)
         if parts.file_edit is None:
             log.info("save bar: no file name box in the dialog")
             return False
         target = folder.rstrip("\\") + "\\"
         self.last_route = ""
-        if parts.items is not None and self._type_in_address_bar(hwnd, parts.items, target):
+        # Ctrl+Shift of the panel's own hotkey may still be held: keys sent now would be Ctrl+Shift+…
+        keys_free = self._keys_released()
+        if keys_free and parts.items is not None and self._through_address_bar(hwnd, parts.items, target):
             if self._arrives(hwnd, folder, timeout):
                 self.last_route = "address bar"
                 return True
-            self._press([VK_ESCAPE])  # whatever is left open in the address bar
+            self._leave_address_bar(hwnd)
         typed = get_text(parts.file_edit)
-        if self.give_keyboard(hwnd, parts.file_edit) and self._in_front(hwnd):
+        if keys_free and self.give_keyboard(hwnd, parts.file_edit) and self._in_front(hwnd):
             send_message(parts.file_edit, EM_SETSEL, 0, -1)  # typing replaces the whole name
             self._type(target)
             self._press([VK_RETURN])
@@ -484,8 +490,26 @@ class WindowsSaveDialogs:
     def _in_front(self, hwnd: int) -> bool:
         return int(user32.GetForegroundWindow() or 0) == hwnd
 
-    def _type_in_address_bar(self, hwnd: int, items: int, text: str) -> bool:
-        """F4 from the list of files opens the address bar for typing; type ``text`` there and Enter."""
+    @staticmethod
+    def _keys_released(timeout: float = 1.5) -> bool:
+        """Wait until Ctrl, Shift, Alt and Win are let go."""
+        deadline = time.monotonic() + timeout
+        while any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in MODIFIER_VKS):
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.03)
+        return True
+
+    def _address_edit(self, hwnd: int) -> int:
+        """The address bar's edit box, when it has the keyboard (the bar is open for typing)."""
+        focused = self.focused(hwnd)
+        if focused and _class(focused) == "Edit" and "Address Band Root" in (
+                _class(a) for a in _ancestors(focused, hwnd)):
+            return focused
+        return 0
+
+    def _through_address_bar(self, hwnd: int, items: int, text: str) -> bool:
+        """F4 from the list of files opens the address bar for typing; put ``text`` there and Enter."""
         if not self.give_keyboard(hwnd, items) or not self._in_front(hwnd):
             return False
         self._press([VK_F4])
@@ -493,18 +517,22 @@ class WindowsSaveDialogs:
         edit = 0
         while time.monotonic() < deadline and not edit:
             time.sleep(0.05)
-            focused = self.focused(hwnd)
-            if focused and _class(focused) == "Edit" and "Address Band Root" in (
-                    _class(a) for a in _ancestors(focused, hwnd)):
-                edit = focused
+            edit = self._address_edit(hwnd)
         if not edit or not self._in_front(hwnd):
-            if self.focused(hwnd) != items:
-                self._press([VK_ESCAPE])
+            self._leave_address_bar(hwnd)
             return False
-        send_message(edit, EM_SETSEL, 0, -1)
-        self._type(text)
+        for ancestor in _ancestors(edit, hwnd):  # F4 also drops the list of recent folders down: with it
+            if _class(ancestor) == "ComboBox":   # open, Enter could take a folder from that list
+                send_message(ancestor, CB_SHOWDROPDOWN, 0, 0)
+        if not set_text(edit, text) or self._address_edit(hwnd) != edit:
+            self._leave_address_bar(hwnd)
+            return False
         self._press([VK_RETURN])
         return True
+
+    def _leave_address_bar(self, hwnd: int) -> None:
+        if self._address_edit(hwnd) and self._in_front(hwnd):
+            self._press([VK_ESCAPE])  # only there: anywhere else Esc would close the dialog
 
     def _arrives(self, hwnd: int, folder: str, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
