@@ -406,6 +406,10 @@ class WindowsSaveDialogs:
             log.info("save bar: no file name box or Save button in the dialog")
             return False
         typed = get_text(parts.file_edit)
+        # the keyboard in the file name box first: with a folder selected in the list, «Сохранить»
+        # would open that folder instead of the one typed
+        user32.PostMessageW(hwnd, WM_NEXTDLGCTL, parts.file_edit, 1)
+        time.sleep(0.1)
         if not set_text(parts.file_edit, folder.rstrip("\\") + "\\"):
             return False
         user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)

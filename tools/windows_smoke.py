@@ -347,6 +347,8 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     existing = pdf / "exists.txt"
     existing.write_text("x", encoding="utf-8")
     name_box = Parts(dialog).file_edit
+    win_savebar.user32.PostMessageW(dialog, 0x0028, name_box, 1)  # the keyboard in the file name box
+    time.sleep(0.3)
     win_savebar.set_text(name_box, existing.name)
     win_savebar.user32.PostMessageW(dialog, 0x0111, 1, Parts(dialog).save_button)  # «Сохранить»
     deadline = time.time() + 5
@@ -375,6 +377,26 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     back = panel.dialog == dialog and dialogs.visible(panel.hwnd)
     print(f"{'OK  ' if back else 'FAIL'} the panel comes back when the question is answered")
     results.append(back)
+
+    # a folder selected in the list of files: the button still opens «PDF», not that folder
+    (order / "другая папка").mkdir(exist_ok=True)
+    dialogs.go_into(dialog, str(order))
+    items = Parts(dialog).items
+    if items:
+        win_savebar.user32.PostMessageW(dialog, 0x0028, items, 1)  # the keyboard in the list
+        time.sleep(0.4)
+        user.press(Key.end)  # selects the last item: «другая папка»
+        user.release(Key.end)
+        time.sleep(0.4)
+    hotkey("1")
+    deadline = time.time() + 6
+    while time.time() < deadline and not ((now := dialogs.folder(dialog)) and same(now[0], pdf)):
+        time.sleep(0.1)
+    now = dialogs.folder(dialog)
+    ok = bool(items) and now is not None and same(now[0], pdf)
+    print(f"{'OK  ' if ok else 'FAIL'} with a folder selected in the list the button still opens «PDF»: "
+          f"dialog in {now!r}")
+    results.append(ok)
     return panel
 
 
