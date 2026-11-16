@@ -62,6 +62,11 @@ every `FAIL` line into an error and `note()` into a notice. Read them with
 `actions/runs/<run id>/jobs`). Cancelling, re-running and manually starting (`workflow_dispatch`)
 a workflow run from here are all refused (403): only a push starts CI.
 
+The Notepad check runs through `tools/ci_notepad_check.ps1`, which also sends what the check has
+written so far to check runs named «Notepad check: …» every few seconds. A job that hangs until its
+45 minutes run out keeps no annotations at all, so read those instead:
+`gh api repos/battaloff/Switcher_ENG_RUS/commits/<sha>/check-runs --jq '.check_runs[] | select(.name|test("Notepad check")) | .output.title, .output.text'`.
+
 ## Architecture
 
 **Event flow.** The OS backend (`switcher/platform/`, `create_backend`) runs a pynput keyboard
@@ -154,4 +159,7 @@ PC sees the same share as `F:\`); a cloud session can't reach that network, so a
 `s._event("press", "save-dialog")`; assert on `s.text`. Reproduce a user's report this way first,
 then fix, then keep it as a test. Windows-only behaviour gets a check in `tools/windows_smoke.py`;
 in that script, hold modifiers until an AutoHotkey hotkey has finished typing and avoid F10 or
-bare Alt combos (they open Notepad's menu and derail every later check).
+bare Alt combos (they open Notepad's menu and derail every later check). Its keyboard
+(`GuardedUser`) presses keys only while Notepad is in front and stops the check otherwise (`Lost`):
+keys typed blind once reached the CI machine's own terminal and froze the whole job. Close a Yes/No
+question by its button (Esc does nothing there), never leave one open.

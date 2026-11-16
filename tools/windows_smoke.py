@@ -118,6 +118,46 @@ def find_edit(hwnd, timeout: float = 20.0):
     return None
 
 
+class Lost(Exception):
+    """The check can't go on safely: stop it rather than press keys into the wrong window."""
+
+
+class GuardedUser:
+    """The pynput keyboard, pressing a key only while a window of Notepad (or of this check) is in front.
+
+    Keys typed into whatever else got in front do real harm: the CI machine's own terminal took them
+    once (a question the check failed to close left it typing blind) and the whole job froze until
+    its time ran out, with nothing left to read.
+    """
+
+    def __init__(self, user, pids, restore):
+        self._user, self._pids, self._restore = user, set(pids), restore
+
+    @staticmethod
+    def _front():
+        hwnd = user32.GetForegroundWindow()
+        pid = wintypes.DWORD()
+        if hwnd:
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return hwnd, pid.value
+
+    def press(self, key) -> None:
+        hwnd, pid = self._front()
+        if pid not in self._pids:
+            was = class_name(hwnd) if hwnd else None
+            self._restore()
+            time.sleep(0.5)
+            hwnd, pid = self._front()
+            if pid not in self._pids:
+                raise Lost(f"{class_name(hwnd) if hwnd else None!r} (process {pid}) is in front, not Notepad: "
+                           f"no key is pressed into it")
+            note("Foreground", f"{was!r} was in front; Notepad is back")
+        self._user.press(key)
+
+    def release(self, key) -> None:
+        self._user.release(key)  # always: a key must not stay held
+
+
 def bring_to_front(hwnd) -> bool:
     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     if user32.SetForegroundWindow(hwnd) and user32.GetForegroundWindow() == hwnd:
@@ -351,7 +391,9 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     dialogs.go_into(dialog, str(pdf))
     time.sleep(0.5)
     name_box = Parts(dialog).file_edit
-    in_box = dialogs.give_keyboard(dialog, name_box)  # the keyboard in the file name box, as a click would
+    in_box = dialogs.give_keyboard(dialog, name_box)  # the keyboard in the file name box
+    if not in_box or not dialogs._in_front(dialog):
+        raise Lost("the file name box of the save dialog did not get the keyboard: nothing is typed")
     win_savebar.send_message(name_box, 0x00B1, 0, -1)  # select the whole name: typing replaces it
     dialogs._type(existing.name)
     note("Save bar", f"before saving over a file: the file name box has the keyboard {in_box}, "
@@ -376,8 +418,16 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
           f"is hidden {hidden}, the question taken for a save dialog {taken}")
     results.append(hidden and not taken)
     if question:
-        user.press(Key.esc)  # «Нет»: nothing is replaced
-        user.release(Key.esc)
+        # «Нет» (nothing is replaced).  Not Esc: a Yes/No question has no Cancel, Esc does nothing there
+        for message, wparam in ((0x0466, 7), (0x0111, 7), (0x0111, 2)):  # TDM_CLICK_BUTTON / WM_COMMAND: IDNO, IDCANCEL
+            win_savebar.user32.PostMessageW(question, message, wparam, 0)
+            deadline = time.time() + 2
+            while time.time() < deadline and win_savebar.user32.IsWindow(question):
+                time.sleep(0.1)
+            if not win_savebar.user32.IsWindow(question):
+                break
+        if win_savebar.user32.IsWindow(question):
+            raise Lost(f"the question {title.value!r} over the save dialog could not be closed")
     deadline = time.time() + 4
     while time.time() < deadline and not (panel.dialog == dialog and dialogs.visible(panel.hwnd)):
         time.sleep(0.1)
@@ -460,7 +510,7 @@ def main() -> int:
     runner = threading.Thread(target=app.run, kwargs={"tray": False}, daemon=True)
     runner.start()
     time.sleep(2.0)
-    user = Controller()
+    user = GuardedUser(Controller(), {notepad.pid, os.getpid()}, lambda: bring_to_front(hwnd))
     vk_of = {code: vk for vk, code in _VK.items()}
     print("installed layouts:", sorted(app.backend._hkls))
 
@@ -699,6 +749,8 @@ def main() -> int:
     panel = None
     try:
         panel = check_save_bar(app, fg, user, Key, KeyCode, results)
+    except Lost:
+        raise
     except Exception as exc:  # noqa: BLE001  (any failure here is a failed check, not the end of the run)
         import traceback
 
@@ -866,4 +918,16 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        code = main()
+    except Lost as lost:
+        print(f"FAIL the check was stopped: {lost}")
+        from pynput.keyboard import Controller as RawKeyboard
+        from pynput.keyboard import Key as RawKey
+
+        for held in (RawKey.ctrl, RawKey.shift, RawKey.alt):  # a chord may have been cut short
+            RawKeyboard().release(held)
+        subprocess.run(["taskkill", "/F", "/IM", "notepad.exe"], capture_output=True, check=False)
+        sys.stdout.flush()
+        os._exit(1)  # threads of the check may still be typing or waiting
+    sys.exit(code)
