@@ -48,13 +48,10 @@ user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctyp
                                 wintypes.UINT)
 user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
-user32.SetFocus.argtypes = (wintypes.HWND,)
 user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
 user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
-kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 user32.GetDC.argtypes = (wintypes.HWND,)
 user32.GetDC.restype = wintypes.HDC
 user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
@@ -80,7 +77,7 @@ ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 
 WM_GETTEXT, WM_SETTEXT, WM_COMMAND, WM_NEXTDLGCTL = 0x000D, 0x000C, 0x0111, 0x0028
 EM_GETSEL, EM_SETSEL = 0x00B0, 0x00B1
-VK_RETURN, VK_ESCAPE, VK_F4 = 0x0D, 0x1B, 0x73
+VK_RETURN, VK_ESCAPE, VK_F4, VK_MENU, VK_D = 0x0D, 0x1B, 0x73, 0x12, 0x44
 MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift, Ctrl, Alt, both Win keys
 CB_SHOWDROPDOWN = 0x014F
 KEYUP, UNICODE = 0x0002, 0x0004  # SendInput: a key let go; a character rather than a key
@@ -435,21 +432,16 @@ class WindowsSaveDialogs:
         return int(info.hwndFocus or 0)
 
     def give_keyboard(self, hwnd: int, control: int) -> bool:
-        """Give the dialog's keyboard to ``control``: the dialog's own way, else Windows' (briefly joining
-        the dialog's input, as a click would)."""
+        """Ask the dialog to move its keyboard to ``control`` and see whether it did.  Only by asking:
+        joining another program's input (AttachThreadInput + SetFocus) can hang both programs."""
         user32.PostMessageW(hwnd, WM_NEXTDLGCTL, control, 1)
-        for _ in range(6):
+        for _ in range(12):
             time.sleep(0.05)
             if self.focused(hwnd) == control:
                 return True
-        theirs, ours = user32.GetWindowThreadProcessId(hwnd, None), kernel32.GetCurrentThreadId()
-        if theirs and user32.AttachThreadInput(ours, theirs, True):
-            try:
-                user32.SetFocus(control)
-            finally:
-                user32.AttachThreadInput(ours, theirs, False)
-        time.sleep(0.05)
-        return self.focused(hwnd) == control
+        log.info("save bar: the dialog did not give the keyboard to %s (it is in %s)", _class(control),
+                 _class(self.focused(hwnd)) if self.focused(hwnd) else None)
+        return False
 
     def go_into(self, hwnd: int, folder: str, timeout: float = 4.0) -> bool:
         """Open ``folder`` in the dialog: through its address bar (the file name is not touched, and a
@@ -463,12 +455,14 @@ class WindowsSaveDialogs:
         self.last_route = ""
         # Ctrl+Shift of the panel's own hotkey may still be held: keys sent now would be Ctrl+Shift+…
         keys_free = self._keys_released()
+        log.info("save bar: opening %s (keys let go: %s)", folder, keys_free)
         if keys_free and parts.items is not None and self._through_address_bar(hwnd, parts.items, target):
             if self._arrives(hwnd, folder, timeout):
                 self.last_route = "address bar"
                 return True
             self._leave_address_bar(hwnd)
         typed = get_text(parts.file_edit)
+        log.info("save bar: not through the address bar: the file name box next")
         if keys_free and self.give_keyboard(hwnd, parts.file_edit) and self._in_front(hwnd):
             send_message(parts.file_edit, EM_SETSEL, 0, -1)  # typing replaces the whole name
             self._type(target)
@@ -509,24 +503,33 @@ class WindowsSaveDialogs:
         return 0
 
     def _through_address_bar(self, hwnd: int, items: int, text: str) -> bool:
-        """F4 from the list of files opens the address bar for typing; put ``text`` there and Enter."""
-        if not self.give_keyboard(hwnd, items) or not self._in_front(hwnd):
+        """Open the address bar for typing (F4 from the list of files, else Alt+D), put ``text`` there
+        and press Enter."""
+        if not self._in_front(hwnd):
             return False
-        self._press([VK_F4])
+        if self.give_keyboard(hwnd, items):
+            log.info("save bar: address bar: F4 from the list of files")
+            self._press([VK_F4])
+        else:
+            log.info("save bar: address bar: Alt+D")
+            self._chord(VK_MENU, VK_D)
         deadline = time.monotonic() + 1.0
         edit = 0
         while time.monotonic() < deadline and not edit:
             time.sleep(0.05)
             edit = self._address_edit(hwnd)
         if not edit or not self._in_front(hwnd):
+            log.info("save bar: address bar: it did not open for typing")
             self._leave_address_bar(hwnd)
             return False
         for ancestor in _ancestors(edit, hwnd):  # F4 also drops the list of recent folders down: with it
             if _class(ancestor) == "ComboBox":   # open, Enter could take a folder from that list
                 send_message(ancestor, CB_SHOWDROPDOWN, 0, 0)
         if not set_text(edit, text) or self._address_edit(hwnd) != edit:
+            log.info("save bar: address bar: could not put the folder there")
             self._leave_address_bar(hwnd)
             return False
+        log.info("save bar: address bar: the folder is there, Enter")
         self._press([VK_RETURN])
         return True
 
@@ -542,6 +545,12 @@ class WindowsSaveDialogs:
             if now and _same(now[0], folder):
                 return True
         return False
+
+    @staticmethod
+    def _chord(modifier: int, key: int) -> None:
+        from .windows import WindowsBackend
+
+        WindowsBackend._send([(modifier, 0, 0), (key, 0, 0), (key, 0, KEYUP), (modifier, 0, KEYUP)])
 
     @staticmethod
     def _press(keys: list[int]) -> None:
