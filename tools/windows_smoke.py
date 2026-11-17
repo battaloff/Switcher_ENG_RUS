@@ -284,6 +284,41 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
                   f"panel {row}")
             results.append(clear)
 
+    class DropDowns:
+        """Lists that drop down over the dialog while a button works: 0.7.5 opened the address bar
+        with F4, which also dropped its list of recent folders down — a curtain on every click."""
+        LISTS = ("ComboLBox", "Auto-Suggest Dropdown")
+
+        def __init__(self):
+            self.thread = user32.GetWindowThreadProcessId(dialog, None)
+            self.before = self.shown()
+            self.seen: set[str] = set()
+            self.stop = threading.Event()
+            self.watcher = threading.Thread(target=self.watch, daemon=True)
+            self.watcher.start()
+
+        def shown(self) -> set[int]:
+            found: set[int] = set()
+
+            def visit(hwnd, _):
+                if user32.GetWindowThreadProcessId(hwnd, None) == self.thread and win_savebar.user32.IsWindowVisible(
+                        hwnd):
+                    found.add(int(hwnd))
+                return True
+
+            user32.EnumWindows(WNDENUMPROC(visit), 0)
+            return found
+
+        def watch(self) -> None:
+            while not self.stop.is_set():
+                self.seen.update(class_name(h) for h in self.shown() - self.before if h != dialog)
+                time.sleep(0.01)
+
+        def end(self) -> set[str]:
+            self.stop.set()
+            self.watcher.join(2)
+            return self.seen
+
     def hotkey(digit: str) -> None:
         user.press(Key.ctrl)
         user.press(Key.shift)
@@ -293,15 +328,23 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
         user.release(Key.ctrl)
 
     pyperclip.copy("")
+    drops = DropDowns()
     hotkey("1")
     deadline = time.time() + 6
     while time.time() < deadline and not ((now := dialogs.folder(dialog)) and same(now[0], pdf)):
         time.sleep(0.1)
     time.sleep(0.3)
+    appeared = drops.end()
     copied, now, kept = pyperclip.paste(), dialogs.folder(dialog), file_name()
     ok = copied == order.name and pdf.is_dir() and now is not None and same(now[0], pdf) and kept == typed
     print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+1 copies the folder's name and opens «PDF»: copied {copied!r}, "
           f"PDF made {pdf.is_dir()}, dialog in {now!r}, file name {kept!r}, by the {panel.system.last_route}")
+    results.append(ok)
+    curtain = sorted(appeared & set(DropDowns.LISTS))
+    ok = not curtain and not panel.system.dropped_down and panel.system.address_key == "Alt+D"
+    print(f"{'OK  ' if ok else 'FAIL'} no list drops down over the dialog when a button opens «PDF»: the address bar "
+          f"opened by {panel.system.address_key or None}, its list of folders dropped down "
+          f"{panel.system.dropped_down}, lists seen {curtain}, windows that appeared {sorted(appeared)}")
     results.append(ok)
 
     from switcher.platform.windows import GUITHREADINFO

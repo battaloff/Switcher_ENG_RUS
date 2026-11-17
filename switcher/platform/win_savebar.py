@@ -79,7 +79,7 @@ WM_GETTEXT, WM_SETTEXT, WM_COMMAND, WM_NEXTDLGCTL = 0x000D, 0x000C, 0x0111, 0x00
 EM_GETSEL, EM_SETSEL = 0x00B0, 0x00B1
 VK_RETURN, VK_ESCAPE, VK_F4, VK_MENU, VK_D = 0x0D, 0x1B, 0x73, 0x12, 0x44
 MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift, Ctrl, Alt, both Win keys
-CB_SHOWDROPDOWN = 0x014F
+CB_SHOWDROPDOWN, CB_GETDROPPEDSTATE = 0x014F, 0x0157
 KEYUP, UNICODE = 0x0002, 0x0004  # SendInput: a key let go; a character rather than a key
 SMTO_ABORTIFHUNG = 0x0002
 IDOK = 1
@@ -378,6 +378,8 @@ class WindowsSaveDialogs:
     def __init__(self):
         self._ink: dict[int, int] = {}  # dialog → where its «Новая папка» ends, from the row's left
         self.last_route = ""  # how go_into opened the folder last (for the log and the Windows check)
+        self.address_key = ""  # the key that opened the address bar last: "Alt+D", or "F4" when it did not
+        self.dropped_down = False  # whether the list of recent folders dropped down over the dialog then
 
     def geometry(self, hwnd: int, measure: bool = True) -> Geometry | None:
         if not user32.IsWindowVisible(hwnd) or not user32.IsWindowEnabled(hwnd):
@@ -458,7 +460,7 @@ class WindowsSaveDialogs:
         log.info("save bar: opening %s (keys let go: %s)", folder, keys_free)
         if keys_free and parts.items is not None and self._through_address_bar(hwnd, parts.items, target):
             if self._arrives(hwnd, folder, timeout):
-                self.last_route = "address bar"
+                self.last_route = f"address bar ({self.address_key})"
                 return True
             self._leave_address_bar(hwnd)
         typed = get_text(parts.file_edit)
@@ -502,29 +504,42 @@ class WindowsSaveDialogs:
             return focused
         return 0
 
-    def _through_address_bar(self, hwnd: int, items: int, text: str) -> bool:
-        """Open the address bar for typing (F4 from the list of files, else Alt+D), put ``text`` there
-        and press Enter."""
-        if not self._in_front(hwnd):
-            return False
-        if self.give_keyboard(hwnd, items):
-            log.info("save bar: address bar: F4 from the list of files")
-            self._press([VK_F4])
-        else:
-            log.info("save bar: address bar: Alt+D")
-            self._chord(VK_MENU, VK_D)
-        deadline = time.monotonic() + 1.0
+    def _wait_address_edit(self, hwnd: int, timeout: float) -> int:
+        deadline = time.monotonic() + timeout
         edit = 0
         while time.monotonic() < deadline and not edit:
-            time.sleep(0.05)
+            time.sleep(0.03)
             edit = self._address_edit(hwnd)
+        return edit
+
+    def _through_address_bar(self, hwnd: int, items: int, text: str) -> bool:
+        """Open the address bar for typing, put ``text`` there and press Enter.
+
+        Alt+D opens it as it is.  F4 (from the list of files) only when Alt+D does not: F4 also
+        drops the list of recent folders down over the dialog, which looked like a curtain coming
+        down on every click of a button (0.7.5)."""
+        self.address_key, self.dropped_down = "", False
+        if not self._in_front(hwnd):
+            return False
+        log.info("save bar: address bar: Alt+D")
+        self._chord(VK_MENU, VK_D)
+        edit = self._wait_address_edit(hwnd, 0.8)
+        self.address_key = "Alt+D"
+        if not edit and self._in_front(hwnd) and self.give_keyboard(hwnd, items):
+            log.info("save bar: address bar: Alt+D did not open it; F4 from the list of files")
+            self._press([VK_F4])
+            edit = self._wait_address_edit(hwnd, 1.0)
+            self.address_key = "F4"
         if not edit or not self._in_front(hwnd):
             log.info("save bar: address bar: it did not open for typing")
             self._leave_address_bar(hwnd)
             return False
-        for ancestor in _ancestors(edit, hwnd):  # F4 also drops the list of recent folders down: with it
-            if _class(ancestor) == "ComboBox":   # open, Enter could take a folder from that list
+        for ancestor in _ancestors(edit, hwnd):  # the list of recent folders closed in any case: with it
+            if _class(ancestor) == "ComboBox":   # open, Enter could take a folder from it
+                self.dropped_down |= bool(send_message(ancestor, CB_GETDROPPEDSTATE, 0, 0))
                 send_message(ancestor, CB_SHOWDROPDOWN, 0, 0)
+        if self.dropped_down:
+            log.info("save bar: address bar: the list of recent folders dropped down (%s); closed", self.address_key)
         if not set_text(edit, text) or self._address_edit(hwnd) != edit:
             log.info("save bar: address bar: could not put the folder there")
             self._leave_address_bar(hwnd)
