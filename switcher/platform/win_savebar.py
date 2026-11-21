@@ -52,6 +52,17 @@ user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
 user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
 user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.ScreenToClient.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.POINT))
+kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.VirtualAllocEx.argtypes = (wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD)
+kernel32.VirtualAllocEx.restype = ctypes.c_void_p
+kernel32.VirtualFreeEx.argtypes = (wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wintypes.DWORD)
+kernel32.ReadProcessMemory.argtypes = (wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                                       ctypes.POINTER(ctypes.c_size_t))
+kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
 user32.GetDC.argtypes = (wintypes.HWND,)
 user32.GetDC.restype = wintypes.HDC
 user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
@@ -77,9 +88,17 @@ ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 
 WM_GETTEXT, WM_SETTEXT, WM_COMMAND, WM_NEXTDLGCTL = 0x000D, 0x000C, 0x0111, 0x0028
 EM_GETSEL, EM_SETSEL = 0x00B0, 0x00B1
-VK_RETURN, VK_ESCAPE, VK_F4, VK_MENU, VK_D = 0x0D, 0x1B, 0x73, 0x12, 0x44
+VK_RETURN, VK_ESCAPE, VK_MENU, VK_CONTROL, VK_D, VK_L = 0x0D, 0x1B, 0x12, 0x11, 0x44, 0x4C
 MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift, Ctrl, Alt, both Win keys
-CB_SHOWDROPDOWN, CB_GETDROPPEDSTATE = 0x014F, 0x0157
+CB_SHOWDROPDOWN = 0x014F
+TB_BUTTONCOUNT, TB_GETITEMRECT = 0x0418, 0x041D
+WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, MK_LBUTTON = 0x0200, 0x0201, 0x0202, 0x0001
+PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_QUERY_LIMITED_INFORMATION = 0x0008, 0x0010, 0x1000
+MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, PAGE_READWRITE = 0x1000, 0x2000, 0x8000, 0x04
+# how the panel opens the address bar for typing, in this order.  Never F4: it also drops the list of
+# recent folders down over the dialog (0.7.5, 0.7.6).  Alt+D is the English letter of «Address»: on
+# the user's Russian Windows it does nothing (their log), so a click on the bar comes first.
+ADDRESS_WAYS = ("click", "Ctrl+L", "Alt+D")
 KEYUP, UNICODE = 0x0002, 0x0004  # SendInput: a key let go; a character rather than a key
 SMTO_ABORTIFHUNG = 0x0002
 IDOK = 1
@@ -177,6 +196,39 @@ def _children(hwnd) -> list[int]:
         return len(found) < 2000
 
     user32.EnumChildWindows(hwnd, WNDENUMPROC(visit), 0)
+    return found
+
+
+def toolbar_buttons(toolbar: int) -> list[Rect]:
+    """Where a toolbar of another program has its buttons (client pixels): TB_GETITEMRECT writes into
+    memory of that program."""
+    count = min(send_message(toolbar, TB_BUTTONCOUNT, 0, 0), 64)
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(toolbar, ctypes.byref(pid))
+    process = kernel32.OpenProcess(PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION,
+                                   False, pid.value)
+    if not count or not process:
+        if process:
+            kernel32.CloseHandle(process)
+        return []
+    found: list[Rect] = []
+    try:
+        remote = kernel32.VirtualAllocEx(process, None, ctypes.sizeof(wintypes.RECT), MEM_COMMIT | MEM_RESERVE,
+                                         PAGE_READWRITE)
+        if not remote:
+            return []
+        try:
+            for index in range(count):
+                if not send_message(toolbar, TB_GETITEMRECT, index, remote):
+                    continue
+                r, done = wintypes.RECT(), ctypes.c_size_t()
+                if kernel32.ReadProcessMemory(process, remote, ctypes.byref(r), ctypes.sizeof(r),
+                                              ctypes.byref(done)) and r.right > r.left:
+                    found.append((r.left, r.top, r.right, r.bottom))
+        finally:
+            kernel32.VirtualFreeEx(process, remote, 0, MEM_RELEASE)
+    finally:
+        kernel32.CloseHandle(process)
     return found
 
 
@@ -378,8 +430,7 @@ class WindowsSaveDialogs:
     def __init__(self):
         self._ink: dict[int, int] = {}  # dialog → where its «Новая папка» ends, from the row's left
         self.last_route = ""  # how go_into opened the folder last (for the log and the Windows check)
-        self.address_key = ""  # the key that opened the address bar last: "Alt+D", or "F4" when it did not
-        self.dropped_down = False  # whether the list of recent folders dropped down over the dialog then
+        self.address_key = ""  # how the address bar was opened last: one of ADDRESS_WAYS ("" — it was not)
 
     def geometry(self, hwnd: int, measure: bool = True) -> Geometry | None:
         if not user32.IsWindowVisible(hwnd) or not user32.IsWindowEnabled(hwnd):
@@ -447,8 +498,8 @@ class WindowsSaveDialogs:
 
     def go_into(self, hwnd: int, folder: str, timeout: float = 4.0) -> bool:
         """Open ``folder`` in the dialog: through its address bar (the file name is not touched, and a
-        folder selected in the list does not matter), else typed as the file name and Enter (then the
-        name typed before is put back)."""
+        folder selected in the list does not matter), else put in the file name box and Enter, as 0.7.4
+        did (then the name typed before is put back)."""
         parts = Parts(hwnd)
         if parts.file_edit is None:
             log.info("save bar: no file name box in the dialog")
@@ -465,15 +516,15 @@ class WindowsSaveDialogs:
             self._leave_address_bar(hwnd)
         typed = get_text(parts.file_edit)
         log.info("save bar: not through the address bar: the file name box next")
-        if keys_free and self.give_keyboard(hwnd, parts.file_edit) and self._in_front(hwnd):
-            send_message(parts.file_edit, EM_SETSEL, 0, -1)  # typing replaces the whole name
-            self._type(target)
+        # put there, not typed: typing would drop the box's own list of suggestions down.  (With a
+        # folder selected in the list of files, the dialog may open that folder instead.)
+        in_box = keys_free and self.give_keyboard(hwnd, parts.file_edit)
+        set_text(parts.file_edit, target)
+        if in_box and self._in_front(hwnd):
             self._press([VK_RETURN])
             self.last_route = "file name box"
-        else:  # no keyboard for the box: the old way, fine while nothing is selected in the list
-            set_text(parts.file_edit, target)
-            if parts.save_button is not None:
-                user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)
+        elif parts.save_button is not None:
+            user32.PostMessageW(hwnd, WM_COMMAND, IDOK, parts.save_button)
             self.last_route = "Save button"
         arrived = self._arrives(hwnd, folder, timeout)
         if user32.IsWindow(hwnd):
@@ -499,7 +550,7 @@ class WindowsSaveDialogs:
     def _address_edit(self, hwnd: int) -> int:
         """The address bar's edit box, when it has the keyboard (the bar is open for typing)."""
         focused = self.focused(hwnd)
-        if focused and _class(focused) == "Edit" and "Address Band Root" in (
+        if focused and _class(focused) == "Edit" and user32.IsWindowVisible(focused) and "Address Band Root" in (
                 _class(a) for a in _ancestors(focused, hwnd)):
             return focused
         return 0
@@ -512,34 +563,66 @@ class WindowsSaveDialogs:
             edit = self._address_edit(hwnd)
         return edit
 
-    def _through_address_bar(self, hwnd: int, items: int, text: str) -> bool:
-        """Open the address bar for typing, put ``text`` there and press Enter.
-
-        Alt+D opens it as it is.  F4 (from the list of files) only when Alt+D does not: F4 also
-        drops the list of recent folders down over the dialog, which looked like a curtain coming
-        down on every click of a button (0.7.5)."""
-        self.address_key, self.dropped_down = "", False
-        if not self._in_front(hwnd):
+    def click_address_bar(self, hwnd: int) -> bool:
+        """Click the empty part of the address bar, after its last folder, as a person would with the
+        mouse (the mouse itself does not move): the bar opens for typing, whatever the language of
+        Windows.  False: no empty part found."""
+        toolbar = Parts(hwnd).address
+        if toolbar is None:
             return False
-        log.info("save bar: address bar: Alt+D")
-        self._chord(VK_MENU, VK_D)
-        edit = self._wait_address_edit(hwnd, 0.8)
-        self.address_key = "Alt+D"
-        if not edit and self._in_front(hwnd) and self.give_keyboard(hwnd, items):
-            log.info("save bar: address bar: Alt+D did not open it; F4 from the list of files")
-            self._press([VK_F4])
-            edit = self._wait_address_edit(hwnd, 1.0)
-            self.address_key = "F4"
+        left, top, _right, bottom = _rect(toolbar)
+        bar_right = _rect(user32.GetParent(toolbar))[2]  # the end of «Breadcrumb Parent»
+        buttons = toolbar_buttons(toolbar)
+        if not buttons:
+            return False
+        end = left + max(b[2] for b in buttons)
+        if bar_right - end < round(16 * dialog_scale(hwnd)):
+            log.info("save bar: address bar: no empty part to click (%s..%s)", end, bar_right)
+            return False
+        point = wintypes.POINT((end + bar_right) // 2, (top + bottom) // 2)
+        target = int(user32.WindowFromPoint(point) or 0)
+        if target != toolbar and not (target in _ancestors(toolbar, hwnd)
+                                      and _class(target) in ("Breadcrumb Parent", "Address Band Root")):
+            log.info("save bar: address bar: something else is at %s,%s (%s)", point.x, point.y, _class(target))
+            return False
+        user32.ScreenToClient(target, ctypes.byref(point))
+        where = (point.y & 0xFFFF) << 16 | (point.x & 0xFFFF)
+        for message, flags in ((WM_MOUSEMOVE, 0), (WM_LBUTTONDOWN, MK_LBUTTON), (WM_LBUTTONUP, 0)):
+            user32.PostMessageW(target, message, flags, where)
+        return True
+
+    def open_address_bar(self, hwnd: int, items: int, ways=ADDRESS_WAYS) -> int:
+        """Open the address bar for typing, the first of ``ways`` that does; its edit box, or 0."""
+        self.address_key = ""
+        for way in ways:
+            if not self._in_front(hwnd):
+                return 0
+            if way == "click":
+                if not self.click_address_bar(hwnd):
+                    continue
+            else:  # from the list of files: in the file name box the keys could end up as text
+                self.give_keyboard(hwnd, items)
+                if not self._in_front(hwnd):
+                    return 0
+                self._chord(VK_CONTROL if way == "Ctrl+L" else VK_MENU, VK_L if way == "Ctrl+L" else VK_D)
+            edit = self._wait_address_edit(hwnd, 0.6)
+            if edit:
+                self.address_key = way
+                log.info("save bar: address bar: opened by %s", way)
+                return edit
+            log.info("save bar: address bar: %s did not open it", way)
+        return 0
+
+    def _through_address_bar(self, hwnd: int, items: int, text: str) -> bool:
+        """Open the address bar for typing, put ``text`` there and press Enter."""
+        edit = self.open_address_bar(hwnd, items)
         if not edit or not self._in_front(hwnd):
             log.info("save bar: address bar: it did not open for typing")
             self._leave_address_bar(hwnd)
             return False
-        for ancestor in _ancestors(edit, hwnd):  # the list of recent folders closed in any case: with it
+        for ancestor in _ancestors(edit, hwnd):  # the list of recent folders, if it is down: with it
             if _class(ancestor) == "ComboBox":   # open, Enter could take a folder from it
-                self.dropped_down |= bool(send_message(ancestor, CB_GETDROPPEDSTATE, 0, 0))
                 send_message(ancestor, CB_SHOWDROPDOWN, 0, 0)
-        if self.dropped_down:
-            log.info("save bar: address bar: the list of recent folders dropped down (%s); closed", self.address_key)
         if not set_text(edit, text) or self._address_edit(hwnd) != edit:
             log.info("save bar: address bar: could not put the folder there")
             self._leave_address_bar(hwnd)

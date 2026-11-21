@@ -285,9 +285,8 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
             results.append(clear)
 
     class DropDowns:
-        """Lists that drop down over the dialog while a button works: 0.7.5 opened the address bar
-        with F4, which also dropped its list of recent folders down — a curtain on every click."""
-        LISTS = ("ComboLBox", "Auto-Suggest Dropdown")
+        """Windows that show up over the dialog while a button works: 0.7.5 and 0.7.6 opened the address
+        bar with F4, which also dropped its list of recent folders down — a curtain on every click."""
 
         def __init__(self):
             self.thread = user32.GetWindowThreadProcessId(dialog, None)
@@ -327,6 +326,42 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
         user.release(Key.shift)
         user.release(Key.ctrl)
 
+    # each way of opening the address bar on its own: does it open, and does anything drop down?  F4 is
+    # tried last only to see that this check notices its list of recent folders (the panel never uses it)
+    items = Parts(dialog).items
+    for way in ("click", "Ctrl+L", "Alt+D", "F4"):
+        if not dialogs._in_front(dialog):
+            raise Lost("the save dialog is not in front: no keys are sent")
+        before = dialogs.folder(dialog)
+        drops = DropDowns()
+        if way == "F4":
+            dialogs.give_keyboard(dialog, items)
+            if not dialogs._in_front(dialog):
+                raise Lost("the save dialog is not in front: F4 is not sent")
+            dialogs._press([0x73])
+            edit = dialogs._wait_address_edit(dialog, 1.0)
+        else:
+            edit = dialogs.open_address_bar(dialog, items, ways=(way,))
+        time.sleep(0.4)
+        appeared = drops.end()
+        for _ in range(3):  # Esc closes the list of folders, then the address bar; only while it has the keyboard
+            if not dialogs._address_edit(dialog):
+                break
+            dialogs._leave_address_bar(dialog)
+            time.sleep(0.3)
+        after = dialogs.folder(dialog)
+        note("Save bar", f"address bar by {way}: opened {bool(edit)}, windows that appeared {sorted(appeared)}, "
+                         f"still open {bool(dialogs._address_edit(dialog))}, folder kept {after == before}")
+        if way == "click":
+            ok = bool(edit) and not appeared and after == before
+            print(f"{'OK  ' if ok else 'FAIL'} a click on the empty part of the address bar opens it for typing (any "
+                  f"language of Windows), nothing drops down: opened {bool(edit)}, appeared {sorted(appeared)}")
+            results.append(ok)
+        if way == "F4":
+            ok = bool(appeared)
+            print(f"{'OK  ' if ok else 'FAIL'} this check sees the list F4 drops down over the dialog: {sorted(appeared)}")
+            results.append(ok)
+
     pyperclip.copy("")
     drops = DropDowns()
     hotkey("1")
@@ -340,11 +375,9 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     print(f"{'OK  ' if ok else 'FAIL'} Ctrl+Shift+1 copies the folder's name and opens «PDF»: copied {copied!r}, "
           f"PDF made {pdf.is_dir()}, dialog in {now!r}, file name {kept!r}, by the {panel.system.last_route}")
     results.append(ok)
-    curtain = sorted(appeared & set(DropDowns.LISTS))
-    ok = not curtain and not panel.system.dropped_down and panel.system.address_key == "Alt+D"
-    print(f"{'OK  ' if ok else 'FAIL'} no list drops down over the dialog when a button opens «PDF»: the address bar "
-          f"opened by {panel.system.address_key or None}, its list of folders dropped down "
-          f"{panel.system.dropped_down}, lists seen {curtain}, windows that appeared {sorted(appeared)}")
+    ok = not appeared and panel.system.address_key == "click"
+    print(f"{'OK  ' if ok else 'FAIL'} nothing drops down over the dialog when a button opens «PDF»: the address bar "
+          f"opened by {panel.system.address_key or None}, windows that appeared {sorted(appeared)}")
     results.append(ok)
 
     from switcher.platform.windows import GUITHREADINFO
