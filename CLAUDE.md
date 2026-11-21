@@ -132,8 +132,11 @@ snippets; `ahk_hotkeys.py` relabels and adds hotkeys for the «Клавиши AH
 **«Сохранить как» panel.** `savebar.py` (pure: the dialog's folder from its address bar text,
 what a button copies, the "PDF" plan, placement), `platform/win_savebar.py` (the dialog's parts:
 the "Адрес: …" toolbar, the row of «Новая папка» between the address band and the panes, the file
-name box; opening a folder by typing it as the file name and pressing Save, then restoring the
-name), `savebar_ui.py` (a non-activating Tk strip on the Tk thread that polls the foreground
+name box; opening a folder through the address bar — a click posted to its empty part after the
+last folder (works in any language of Windows), else Ctrl+L, else Alt+D (English only: it did nothing
+on the user's Russian Windows); never F4, which drops the recent-folders list over the dialog and
+made the user withdraw 0.7.5–0.7.6 — and only failing that the file name box with WM_SETTEXT +
+Enter, never typed (typing drops its suggestions down)), `savebar_ui.py` (a non-activating Tk strip on the Tk thread that polls the foreground
 window; button work runs on its own thread). Its hotkeys are swallowed in
 `WindowsBackend._hook_filter` only while its dialog is in front. Settings: `Config.save_bar`.
 
