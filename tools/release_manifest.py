@@ -18,13 +18,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+WITHDRAWN = ROOT / "packaging" / "windows" / "WITHDRAWN.txt"
 sys.path.insert(0, str(ROOT))
 
 from switcher import updater  # noqa: E402
 
 
+def withdrawn(path: Path = WITHDRAWN) -> set[str]:
+    """Versions taken back: never published again, left out of releases.json."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return {line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")}
+
+
 def build(version: str, installer: Path, notes: str, published: list[dict], repo: str) -> dict:
-    sha = hashlib.sha256(installer.read_bytes()).hexdigest()
+    taken_back = withdrawn()  # (``version`` itself stays: the update check of a build-only run needs it)
+    sha =hashlib.sha256(installer.read_bytes()).hexdigest()
     tag = f"v{version}"
     new = {
         "tag_name": tag, "name": f"Switcher {version}", "body": notes, "draft": False, "prerelease": False,
@@ -33,7 +41,8 @@ def build(version: str, installer: Path, notes: str, published: list[dict], repo
         "assets": [{"name": installer.name, "size": installer.stat().st_size, "digest": f"sha256:{sha}",
                     "browser_download_url": f"https://github.com/{repo}/releases/download/{tag}/{installer.name}"}],
     }
-    result = updater.manifest([new] + [r for r in published if r.get("tag_name") != tag])
+    kept = [r for r in published if r.get("tag_name") != tag and str(r.get("tag_name", "")).lstrip("v") not in taken_back]
+    result = updater.manifest([new] + kept)
     first = updater.parse_releases(result["releases"])[0]
     assert (first.version, first.size, first.sha256) == (version, installer.stat().st_size, sha), first
     return result

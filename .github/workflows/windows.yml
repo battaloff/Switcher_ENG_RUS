@@ -55,6 +55,9 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::tag $GITHUB_REF_NAME does not match switcher.__version__ $version"; exit 1
           fi
+          if grep -qxF "$version" packaging/windows/WITHDRAWN.txt; then
+            echo "v$version is withdrawn (packaging/windows/WITHDRAWN.txt): built and tested, not published"; exit 0
+          fi
           if [ "$GITHUB_REF_TYPE" != "tag" ] && gh release view "v$version" >/dev/null 2>&1; then
             if [ "$GITHUB_EVENT_NAME" = "push" ]; then
               echo "v$version is already out: this push is built and tested, not published"; exit 0

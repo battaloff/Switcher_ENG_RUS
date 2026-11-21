@@ -298,3 +298,24 @@ def test_changelog_documents_the_current_version():
     assert "Установка" not in " ".join(shown)
     with pytest.raises(SystemExit):
         release_notes.section("99.99.99")
+
+
+def test_withdrawn_versions_are_left_out_of_the_version_list(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_manifest", Path(__file__).parent.parent / "tools" /
+                                                  "release_manifest.py")
+    release_manifest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release_manifest)
+    assert {"0.7.5", "0.7.6"} <= release_manifest.withdrawn()  # the panel dropped a list over the dialog
+
+    def release(version: str) -> dict:
+        name = f"SwitcherSetup-{version}.exe"
+        return {"tag_name": f"v{version}", "assets": [{"name": name, "size": 1, "digest": "sha256:" + "0" * 64,
+                                                      "browser_download_url": f"https://example.invalid/{name}"}]}
+
+    installer = tmp_path / "SwitcherSetup-9.9.9.exe"
+    installer.write_bytes(b"installer")
+    data = release_manifest.build("9.9.9", installer, "Исправлено: что-то", [release("0.7.6"), release("0.7.5"),
+                                                                            release("0.7.4")], "owner/repo")
+    assert [r["tag_name"] for r in data["releases"]] == ["v9.9.9", "v0.7.4"]

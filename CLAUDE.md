@@ -50,6 +50,11 @@ builds the installer, runs every check on windows-latest and publishes the GitHu
 version that never got published is folded into the next CHANGELOG section. Pushes without a new
 version are only built and tested.
 
+A version the user wants taken back goes into `packaging/windows/WITHDRAWN.txt` (0.7.5 and 0.7.6
+are there): CI never publishes it again and `releases.json` leaves it out. This session can't delete
+or edit GitHub releases (403); the user deletes them on github.com. Items of a withdrawn version
+that stay in the code go into the next CHANGELOG section again, so the user sees them.
+
 The repository must stay **public**: the app (and the update E2E) download `releases.json` and the
 installer anonymously, so a private repository answers 404 and in-app updates stop working. If the
 update E2E fails with «GitHub ответил ошибкой 404», check the repository's visibility first and ask

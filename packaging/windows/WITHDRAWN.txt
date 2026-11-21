@@ -1,0 +1,7 @@
+# Versions taken back.  CI never publishes them again (even if their GitHub release is deleted
+# and the version is pushed once more), and releases.json leaves them out, so the app stops
+# offering them as soon as a newer version is out.  One version per line.
+# 0.7.5 and 0.7.6: the «Сохранить как» panel dropped the address bar's list of folders over the
+# dialog on every click (F4); the user went back to 0.7.4.
+0.7.5
+0.7.6
