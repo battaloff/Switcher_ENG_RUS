@@ -470,13 +470,16 @@ def check_save_bar(app, dialog, user, Key, KeyCode, results):
     in_box = dialogs.give_keyboard(dialog, name_box)  # the keyboard in the file name box
     if not in_box or not dialogs._in_front(dialog):
         raise Lost("the file name box of the save dialog did not get the keyboard: nothing is typed")
-    win_savebar.send_message(name_box, 0x00B1, 0, -1)  # select the whole name: typing replaces it
-    dialogs._type(existing.name)
+    # the name is put in the box, not typed: typed, it drops the box's list of suggestions down (the file
+    # is there), and the Enter after it went to that list once — the question came only 5-10 s later
+    win_savebar.set_text(name_box, existing.name)
+    time.sleep(0.3)
     note("Save bar", f"before saving over a file: the file name box has the keyboard {in_box}, "
-                     f"the dialog in {dialogs.folder(dialog)!r} ({dialogs.last_route})")
+                     f"the dialog in {dialogs.folder(dialog)!r} ({dialogs.last_route}), "
+                     f"the name {win_savebar.get_text(name_box)!r}")
     user.press(Key.enter)  # «Сохранить»
     user.release(Key.enter)
-    deadline = time.time() + 5
+    deadline = time.time() + 15
     question = 0
     while time.time() < deadline:
         front = int(user32.GetForegroundWindow() or 0)
@@ -840,16 +843,22 @@ def main() -> int:
         results.append(False)
     tap(Key.esc)
     time.sleep(1)
-    # whatever dialog of Notepad is still open (one that came up late, say) is closed by its «Cancel»:
-    # left open, it would take the keys of every check after this one
-    deadline = time.time() + 10
+    # whatever dialog of Notepad is still open (one that came up late, say) is closed: a Yes/No question
+    # by «No» (it has no «Cancel»), any other by «Cancel».  Left open, it would take the keys of every
+    # check after this one
+    deadline = time.time() + 15
     while time.time() < deadline:
         front = user32.GetForegroundWindow()
         if not front or front == hwnd or class_name(front) != "#32770":
             break
-        note("Save As", "a dialog is still open after the checks: closed by «Cancel»")
-        user32.PostMessageW(front, 0x0111, 2, 0)  # WM_COMMAND IDCANCEL
-        time.sleep(1)
+        title = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(front, title, 256)
+        note("Save As", f"a dialog is still open after the checks ({title.value!r}): closed by «No» / «Cancel»")
+        for message, wparam in ((0x0466, 7), (0x0111, 7), (0x0111, 2)):  # TDM_CLICK_BUTTON / WM_COMMAND: IDNO, IDCANCEL
+            if user32.GetForegroundWindow() != front:
+                break
+            user32.PostMessageW(front, message, wparam, 0)
+            time.sleep(0.7)
     if panel is not None:
         deadline = time.time() + 3
         while time.time() < deadline and (panel.dialog or panel.system.visible(panel.hwnd)):
