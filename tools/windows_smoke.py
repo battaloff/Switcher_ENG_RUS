@@ -793,7 +793,13 @@ def main() -> int:
     user.release(Key.ctrl)
     asked = time.time()
     time.sleep(1)
-    while time.time() - asked < 8 and app.backend.current_layout() != EN:  # a slow runner: give it time
+    # the dialog lists network places as it opens: with the runner's network slow it once took more than
+    # 8 s, came up while later checks were typing and failed them too.  Wait for the dialog, then the layout
+    while time.time() - asked < 30 and class_name(user32.GetForegroundWindow()) != "#32770":
+        time.sleep(0.2)
+    opened = time.time() - asked
+    note("Save As", f"the dialog was in front after {opened:.1f} s")
+    while time.time() - asked < opened + 8 and app.backend.current_layout() != EN:
         time.sleep(0.2)
     waited = time.time() - asked
     fg = user32.GetForegroundWindow()
@@ -834,6 +840,16 @@ def main() -> int:
         results.append(False)
     tap(Key.esc)
     time.sleep(1)
+    # whatever dialog of Notepad is still open (one that came up late, say) is closed by its «Cancel»:
+    # left open, it would take the keys of every check after this one
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        front = user32.GetForegroundWindow()
+        if not front or front == hwnd or class_name(front) != "#32770":
+            break
+        note("Save As", "a dialog is still open after the checks: closed by «Cancel»")
+        user32.PostMessageW(front, 0x0111, 2, 0)  # WM_COMMAND IDCANCEL
+        time.sleep(1)
     if panel is not None:
         deadline = time.time() + 3
         while time.time() < deadline and (panel.dialog or panel.system.visible(panel.hwnd)):

@@ -81,9 +81,13 @@ $null = Send-Report "started" "The Russian layout is added; installing AutoHotke
 
 # AutoHotkey, for the scripts manager and for keys typed by a script
 $code = Invoke-Limited "AutoHotkey install" "choco install autohotkey --no-progress -y" 300
-if ($code -in 0, 3010) { $env:SWITCHER_EXPECT_AHK = "1" }
+# Chocolatey answers 0 even when its feed failed (a 504 once: "installed 0/0 packages"): AutoHotkey counts
+# as installed only when it is there
+$installed = @("$env:ProgramFiles\AutoHotkey", "${env:ProgramFiles(x86)}\AutoHotkey") |
+    Where-Object { $_ -and (Get-ChildItem -LiteralPath $_ -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue) }
+if (($code -in @(0, 3010)) -and $installed) { $env:SWITCHER_EXPECT_AHK = "1" }
 else {
-    Write-Host "::warning::AutoHotkey could not be installed (exit '$code'): its checks are skipped"
+    Write-Host "::warning::AutoHotkey could not be installed (exit '$code', found: '$installed'): its checks are skipped"
     Get-Process -Name "AutoHotkey*", "choco*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
