@@ -541,3 +541,48 @@ def test_the_mark_of_another_computer_is_taken_off(tmp_path, docker_folder):
     coreldocker.install_docker(coreldocker.read_package(package), "POLITEXT", targets)  # installed again
     with pytest.raises(OSError):
         open(f"{page}:Zone.Identifier", encoding="ascii").close()
+
+
+# -- how big the buttons are -----------------------------------------------------------------------
+
+def test_the_size_of_the_buttons_is_read_from_the_page(docker):
+    from switcher.coreldocker import Look, look_of
+
+    assert docker.look() == Look(4, 42, 10)  # the page's own style
+    assert look_of("<html><head></head></html>") == Look()  # no style at all
+    assert look_of("<style>.preset{width:33.333%;min-height:50px;font-size:12px}</style>") == Look(3, 50, 12)
+    assert Look(3, 56, 13).css() == (".preset{width:33.3333%;min-height:56px;font-size:13px}"
+                                     ".preset .subtitle{font-size:10px}")
+    assert Look(4, 42, 7).subtitle_font == 7
+
+
+def test_the_size_of_the_buttons_is_written_into_the_docker(docker):
+    from switcher.coreldocker import LOOK_ID, Look
+
+    before = docker.page.read_text(encoding="utf-8")
+    buttons = page_presets(docker)
+    docker.save_look(Look(3, 56, 13))
+    page = docker.page.read_text(encoding="utf-8")
+    assert page.count(f'<style id="{LOOK_ID}">') == 1 and docker.look() == Look(3, 56, 13)
+    assert page.index(LOOK_ID) > page.index(".subtitle {") and page.index(LOOK_ID) < page.index("</head>")
+    assert find_config(page)[0]["columns"] == 3 and page_presets(docker) == buttons  # the buttons as they were
+    assert json.loads(docker.manifest.read_text(encoding="utf-8"))["Columns"] == 3
+    docker.save_look(Look(6, 30, 8))  # replaced, not added
+    page = docker.page.read_text(encoding="utf-8")
+    assert page.count(LOOK_ID) == 1 and docker.look() == Look(6, 30, 8)
+    docker.save(docker.load())  # changing the buttons keeps the size
+    assert docker.look() == Look(6, 30, 8)
+    for bad in (Look(0, 42, 10), Look(9, 42, 10), Look(4, 10, 10), Look(4, 42, 30)):
+        with pytest.raises(DockerError):
+            docker.save_look(bad)
+    assert docker.undo() and docker.undo() and docker.look() == Look(3, 56, 13)
+    assert docker.undo() and docker.page.read_text(encoding="utf-8") == before
+
+
+def test_an_installed_docker_keeps_the_size_of_its_buttons(tmp_path, docker):
+    from switcher.coreldocker import Look
+
+    docker.save_look(Look(3, 56, 13))
+    targets = install_targets(tmp_path / "other", "27")
+    (folder,) = coreldocker.install_docker(coreldocker.read_package(docker.folder), "POLITEXT", targets)
+    assert Docker(folder, backups=tmp_path / "copies").look() == Look(3, 56, 13)

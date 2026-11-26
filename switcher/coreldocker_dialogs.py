@@ -9,7 +9,11 @@ from collections.abc import Callable
 import customtkinter as ctk
 
 from .coreldocker import (
+    COLUMNS,
     DEFAULT_COLOR,
+    FONTS,
+    HEIGHTS,
+    Look,
     Preset,
     _number,
     auto_subtitle,
@@ -273,6 +277,114 @@ class InstallDialog(ctk.CTkToplevel):
             self.status.configure(text="Отметьте, в какой CorelDRAW установить докер.")
             return
         error = self.on_done(caption, targets)
+        if error:
+            self.status.configure(text=error)
+            return
+        self.destroy()
+
+
+class LookDialog(ctk.CTkToplevel):
+    """How big the docker draws its buttons: how many in a row, their height and the caption's size,
+    with a sample of a few buttons drawn that way.  ``on_done(look)`` returns an error, or None."""
+
+    SAMPLE_WIDTH = 300  # px: about as wide as the docker usually is
+
+    def __init__(self, master, on_done: Callable[[Look], str | None], look: Look, samples: list[Preset]):
+        super().__init__(master)
+        _set_icon(self)
+        self.title("Вид кнопок докера — Switcher")
+        self.geometry("560x600")
+        self.resizable(False, False)
+        self.on_done = on_done
+        self.samples = samples[:8] or [Preset("510×+32", subtitle="→26mm")]
+        body = ctk.CTkFont(size=13)
+        bold = ctk.CTkFont(size=13, weight="bold")
+        small = ctk.CTkFont(size=12)
+        self.vars: dict[str, tk.IntVar] = {}
+        self.values: dict[str, ctk.CTkLabel] = {}
+        for key, title, (low, high), value, unit in (
+                ("columns", "Кнопок в ряду", COLUMNS, look.columns, ""),
+                ("height", "Высота кнопки", HEIGHTS, look.height, " точек"),
+                ("font", "Размер надписи", FONTS, look.font, " точек")):
+            row = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+            row.pack(fill="x", padx=18, pady=(14, 0))
+            ctk.CTkLabel(row, text=title, font=bold, anchor="w", width=150).pack(side="left")
+            self.values[key] = ctk.CTkLabel(row, text="", font=body, width=80, anchor="e")
+            self.values[key].pack(side="right")
+            self.vars[key] = tk.IntVar(value=value)
+            ctk.CTkSlider(row, from_=low, to=high, number_of_steps=high - low, variable=self.vars[key],
+                          command=lambda _v, k=key, u=unit: self._changed(k, u)).pack(
+                side="left", fill="x", expand=True, padx=(8, 8))
+            self._changed(key, unit, draw=False)
+        ctk.CTkLabel(self, text="Так кнопки будут выглядеть в докере (шириной около 300 точек):", font=small,
+                     text_color=MUTED, anchor="w").pack(fill="x", padx=18, pady=(16, 4))
+        self.sample = tk.Canvas(self, width=self.SAMPLE_WIDTH, height=200, highlightthickness=0, bg="#FFFFFF")
+        self.sample.pack(padx=18, anchor="w")
+        self.status = ctk.CTkLabel(self, text="В CorelDRAW новый вид появится, когда панель докера закрыть и открыть "
+                                              "снова.", font=small, text_color=MUTED, anchor="w", justify="left",
+                                   wraplength=520)
+        self.status.pack(fill="x", padx=18, pady=(10, 0))
+        buttons = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        buttons.pack(side="bottom", fill="x", padx=18, pady=16)
+        ctk.CTkButton(buttons, text="Отмена", width=110, height=34, font=body, fg_color=NEUTRAL,
+                      hover_color=NEUTRAL_HOVER, text_color=TEXT, border_width=1, border_color=CARD_BORDER,
+                      command=self.destroy).pack(side="right")
+        ctk.CTkButton(buttons, text="Готово", width=130, height=34, font=body, command=self.done).pack(
+            side="right", padx=(0, 8))
+        ctk.CTkButton(buttons, text="Как было в докере", width=150, height=34, font=body, fg_color=NEUTRAL,
+                      hover_color=NEUTRAL_HOVER, text_color=TEXT, border_width=1, border_color=CARD_BORDER,
+                      command=self.usual).pack(side="left")
+        self.bind("<Escape>", lambda _e: self.destroy(), add="+")
+        self.draw()
+        self.after(50, self.lift)
+
+    def look(self) -> Look:
+        return Look(*(int(self.vars[key].get()) for key in ("columns", "height", "font")))
+
+    def _changed(self, key: str, unit: str, draw: bool = True) -> None:
+        self.values[key].configure(text=f"{int(self.vars[key].get())}{unit}")
+        if draw:
+            self.draw()
+
+    def usual(self) -> None:
+        """Back to the docker's own look: four in a row, 42 high, captions of 10."""
+        for key, value in (("columns", 4), ("height", 42), ("font", 10)):
+            self.vars[key].set(value)
+        for key, unit in (("columns", ""), ("height", " точек"), ("font", " точек")):
+            self._changed(key, unit, draw=False)
+        self.draw()
+
+    def draw(self) -> None:
+        """A few of the docker's buttons as the docker will draw them (sizes as in the panel, 1:1)."""
+        look = self.look()
+        canvas = self.sample
+        canvas.delete("all")
+        gap, width = 4, self.SAMPLE_WIDTH / look.columns
+        rows = -(-len(self.samples) // look.columns)
+        canvas.configure(height=max(60, min(260, rows * (look.height + gap) + gap)))
+        title_font = ("Segoe UI", -look.font, "bold")
+        subtitle_font = ("Segoe UI", -look.subtitle_font)
+        for index, preset in enumerate(self.samples):
+            row, column = divmod(index, look.columns)
+            x0, y0 = column * width + 2, row * (look.height + gap) + gap
+            x1, y1 = x0 + width - gap, y0 + look.height
+            if y1 > 260:
+                break
+            color = normal_color(preset.color) or DEFAULT_COLOR
+            canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=color)
+            middle = (x0 + x1) / 2
+            if preset.subtitle:
+                canvas.create_text(middle, (y0 + y1) / 2 - look.font * 0.55, text=preset.title, fill="#FFFFFF",
+                                   font=title_font, width=max(10, x1 - x0 - 4))
+                canvas.create_text(middle, (y0 + y1) / 2 + look.font * 0.65, text=preset.subtitle, fill="#FFFFFF",
+                                   font=subtitle_font, width=max(10, x1 - x0 - 4))
+            else:
+                canvas.create_text(middle, (y0 + y1) / 2, text=preset.title, fill="#FFFFFF", font=title_font,
+                                   width=max(10, x1 - x0 - 4))
+
+    def done(self) -> None:
+        look = self.look()
+        error = look.problem() or self.on_done(look)
         if error:
             self.status.configure(text=error)
             return

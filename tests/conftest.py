@@ -35,7 +35,20 @@ def profile():
 
 DOCKER_PAGE = """<!DOCTYPE html>
 <html>
-<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><title>POLITEXT</title></head>
+<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><title>POLITEXT</title>
+  <style type="text/css">
+    .preset-grid { overflow:hidden; margin:0 -2px 6px -2px; }
+    .preset {
+      float:left;
+      width:25%;
+      min-height:42px;
+      padding:6px 4px;
+      font-size:10px;
+    }
+    .preset:hover { filter:brightness(.92); }
+    .subtitle { display:block; margin-top:2px; font-size:8px; }
+  </style>
+</head>
 <body>
   <div class="panel">
     <div class="panel-title">
@@ -177,7 +190,7 @@ def make_docker(root, bom: bool = False, newline: str = "\n", macros: bool = Tru
                         "MacroProject": "", "MacroName": "", "MacroFileName": "", "MinimumCorelVersion": 25})
     config = {"name": caption, "macroProjectName": "Politext", "generateVbaMacros": True,
               "minimumCorelVersion": 25, "columns": 4, "presets": page}
-    html = DOCKER_PAGE % json.dumps(config, ensure_ascii=False, separators=(",", ":"))
+    html = DOCKER_PAGE.replace("%s", json.dumps(config, ensure_ascii=False, separators=(",", ":")), 1)
     (folder / "Politext.html").write_bytes((b"\xef\xbb\xbf" if bom else b"") + html.replace("\n", newline).encode())
     studio = {"SchemaVersion": 4, "Name": caption, "FolderName": name, "Columns": 4,
               "CommandGuid": DOCKER_GUIDS["command"], "BrowserGuid": DOCKER_GUIDS["browser"],

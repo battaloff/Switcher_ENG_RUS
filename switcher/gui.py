@@ -900,13 +900,14 @@ class SettingsWindow(ctk.CTkToplevel):
             self._button(upper, "↓", lambda: self.move_docker_preset(1), width=40),
             self._button(lower, "Группу выше", lambda: self.move_docker_group(-1), width=120),
             self._button(lower, "Группу ниже", lambda: self.move_docker_group(1), width=120),
+            self._button(lower, "Вид кнопок…", self.docker_look, width=120),
         ]
         for index, button in enumerate(self.docker_buttons):
             button.pack(side="left", padx=(0 if index in (0, 5) else 4 if index == 4 else 8, 0))
         remove = self._button(upper, "Удалить", self.remove_docker_preset, danger=True, width=90)
         remove.pack(side="right")
         self.docker_buttons.append(remove)
-        self.docker_undo = self._button(lower, "Отменить последнее изменение", self.undo_docker, width=230)
+        self.docker_undo = self._button(lower, "Отменить изменение", self.undo_docker, width=160)
         self.docker_undo.pack(side="right")
         self.docker_hint = ctk.CTkLabel(page, text="", font=self.fonts["small"], text_color=MUTED, anchor="w",
                                         justify="left", wraplength=620)
@@ -1279,6 +1280,36 @@ class SettingsWindow(ctk.CTkToplevel):
         presets = list(self.docker_presets)
         del presets[index]
         self._change_docker(presets, presets[min(index, len(presets) - 1)].id if presets else None)
+
+    def docker_look(self) -> None:
+        """How big the docker draws its buttons."""
+        from . import coreldocker
+        from .coreldocker_dialogs import LookDialog
+
+        if self.docker is None or not self.docker_writable:
+            return
+        try:
+            look = self.docker.look()
+        except coreldocker.DockerError as exc:
+            messagebox.showerror("Switcher", str(exc), parent=self)
+            return
+        LookDialog(self, self.put_docker_look, look, self.docker_presets)
+
+    def put_docker_look(self, look) -> str | None:
+        """Write the buttons' size into the docker; an error to show in the dialog, or None."""
+        from . import coreldocker
+
+        if self.docker is None:
+            return "Докер не найден."
+        try:
+            self.docker.save_look(look)
+        except coreldocker.DockerError as exc:
+            return str(exc)
+        selected = self.docker_tree.selection()
+        self._show_docker(self.docker, select=selected[0] if selected else None,
+                          note=f"Вид кнопок записан в докер: в ряду {look.columns}, высота {look.height}, надпись "
+                               f"{look.font}. В CorelDRAW он появится, когда панель докера закрыть и открыть снова.")
+        return None
 
     def undo_docker(self) -> None:
         from . import coreldocker

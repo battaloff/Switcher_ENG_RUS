@@ -467,6 +467,44 @@ class Docker:
         except OSError as exc:
             raise DockerError(f"Не удалось сохранить копию файлов докера в {self.backups}: {exc}") from exc
 
+    def look(self) -> Look:
+        try:
+            return look_of(_read(self.page)[0])
+        except (OSError, UnicodeDecodeError) as exc:
+            raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
+
+    def save_look(self, look: Look) -> None:
+        """How big the docker draws its buttons: into the page (and the number in a row into the
+        project, as Docker Studio keeps it); the files as they were are kept for ``undo``."""
+        error = look.problem()
+        if error:
+            raise DockerError(error)
+        try:
+            html, bom = _read(self.page)
+        except (OSError, UnicodeDecodeError) as exc:
+            raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
+        config, begin, end = find_config(html)
+        config["columns"] = look.columns
+        files = {self.page: _encoded(with_look(html[:begin] + script_json(config) + html[end:], look), bom)}
+        try:
+            text, project_bom = _read(self.manifest)
+            project = json.loads(text)
+        except (OSError, UnicodeDecodeError, ValueError):
+            project = None
+        if isinstance(project, dict):
+            project["Columns"] = look.columns
+            newline = "\r\n" if "\r\n" in text else "\n"
+            files[self.manifest] = _encoded(json.dumps(project, ensure_ascii=True, indent=2).replace("\n", newline),
+                                            project_bom)
+        self._backup()
+        try:
+            for path, data in files.items():
+                self._write(path, data)
+        except OSError as exc:
+            raise DockerError(f"Не удалось записать {exc.filename or self.folder}: Windows не разрешает менять "
+                              "файлы в этой папке.") from exc
+        log.info("corel docker: buttons of %s: %s", self.folder, look)
+
     def can_undo(self) -> bool:
         return bool(self._kept())
 
@@ -858,3 +896,66 @@ def install_docker(files: dict[str, bytes], caption: str, targets: list[Target],
     for folder, _content, _guids in prepared:
         log.info("corel docker: «%s» installed into %s", caption, folder)
     return [folder for folder, _content, _guids in prepared]
+
+
+# -- how big the buttons are -----------------------------------------------------------------------
+#
+# The page draws its buttons by its own CSS: ".preset { float:left; width:25%; min-height:42px;
+# font-size:10px; … }" — four in a row.  Switcher adds a style of its own after the page's styles
+# (one block, replaced each time), so the page itself is not rewritten.
+
+LOOK_ID = "switcher-look"
+_LOOK_BLOCK = re.compile(r'[ \t]*<style id="switcher-look">.*?</style>\r?\n?', re.DOTALL)
+_PRESET_RULE = re.compile(r"\.preset\s*\{([^}]*)\}")
+COLUMNS, HEIGHTS, FONTS = (1, 8), (24, 120), (7, 24)  # what the settings let choose
+
+
+@dataclass(frozen=True)
+class Look:
+    columns: int = 4   # buttons in a row
+    height: int = 42   # px: the least height of a button
+    font: int = 10     # px: its caption; the line under it is a little smaller
+
+    @property
+    def subtitle_font(self) -> int:
+        return max(FONTS[0], round(self.font * 0.8))
+
+    def css(self) -> str:
+        width = f"{100 / self.columns:.4f}".rstrip("0").rstrip(".")
+        return (f".preset{{width:{width}%;min-height:{self.height}px;font-size:{self.font}px}}"
+                f".preset .subtitle{{font-size:{self.subtitle_font}px}}")
+
+    def problem(self) -> str | None:
+        for value, (low, high), what in ((self.columns, COLUMNS, "Кнопок в ряду"), (self.height, HEIGHTS, "Высота"),
+                                         (self.font, FONTS, "Размер надписи")):
+            if not low <= value <= high:
+                return f"{what}: от {low} до {high}."
+        return None
+
+
+def look_of(html: str) -> Look:
+    """How big the page draws its buttons: Switcher's own style if the page has it, else the page's."""
+    block = _LOOK_BLOCK.search(html)
+    rule = _PRESET_RULE.search(block.group(0) if block else html)
+    if rule is None:
+        return Look()
+    body = rule.group(1)
+
+    def value(pattern: str, default: float) -> float:
+        found = re.search(pattern, body)
+        return float(found.group(1)) if found else default
+
+    width = value(r"(?<![-\w])width\s*:\s*([\d.]+)%", 25)
+    return Look(columns=max(COLUMNS[0], min(COLUMNS[1], round(100 / width) if width else 4)),
+                height=round(value(r"min-height\s*:\s*([\d.]+)px", 42)),
+                font=round(value(r"font-size\s*:\s*([\d.]+)px", 10)))
+
+
+def with_look(html: str, look: Look) -> str:
+    """The page with Switcher's style for its buttons (put in or replaced; after the page's own styles)."""
+    newline = "\r\n" if "\r\n" in html else "\n"
+    block = f'  <style id="{LOOK_ID}">{look.css()}</style>{newline}'
+    html = _LOOK_BLOCK.sub("", html, count=1)
+    head = re.search(r"</head\s*>", html, re.IGNORECASE)
+    at = head.start() if head else (re.search(r"<body\b", html, re.IGNORECASE) or re.search(r"$", html)).start()
+    return html[:at] + block + html[at:]

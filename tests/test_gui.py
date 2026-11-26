@@ -959,3 +959,31 @@ def test_the_docker_goes_to_another_computer(window, docker_folder, monkeypatch,
     monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kw: str(tmp_path / "x.zip"))
     window.install_docker_file()
     assert "не файл докера" in str(window.errors[-1])
+
+
+def test_the_size_of_the_docker_buttons_is_chosen(window, docker_folder, monkeypatch, tmp_path):
+    from switcher.coreldocker import Docker, Look
+    from switcher.coreldocker_dialogs import LookDialog
+
+    monkeypatch.setenv("SWITCHER_HOME", str(tmp_path / "home"))
+    window.config_copy.corel_docker.folder = str(docker_folder)
+    window.show("docker")
+    ROOT.update()
+    window.docker_look()
+    ROOT.update()
+    dialog = [w for w in window.winfo_children() if isinstance(w, LookDialog)][-1]
+    assert dialog.look() == Look(4, 42, 10) and dialog.values["height"].cget("text") == "42 точек"
+    assert len(dialog.sample.find_all()) == 4 * 3  # four buttons: a box, a caption, the line under it
+    dialog.vars["columns"].set(2)
+    dialog.vars["font"].set(14)
+    dialog._changed("columns", "")
+    assert int(dialog.sample.cget("height")) == 2 * (42 + 4) + 4  # two rows of two
+    dialog.done()
+    assert Docker(docker_folder).look() == Look(2, 42, 14)
+    assert "в ряду 2" in window.docker_hint.cget("text") and window.docker_undo.cget("state") == "normal"
+    window.docker_look()
+    ROOT.update()
+    dialog = [w for w in window.winfo_children() if isinstance(w, LookDialog)][-1]
+    dialog.usual()
+    assert dialog.look() == Look(4, 42, 10)
+    dialog.destroy()

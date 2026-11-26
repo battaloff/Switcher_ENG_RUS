@@ -155,7 +155,9 @@ CorelDRAW (`corel_targets`: …\Programs64\CorelDRW.exe) as a docker of its own 
 `<Caption>_Switcher`, new GUIDs for its command, page and docker in AppUI/UserUI.xslt, the caption
 «POLITEXT 2» when one is taken, no VBA (a .gms project name would clash), Windows' Zone.Identifier
 mark removed (with it the docker shows empty), `switcher-install.json` so a reinstall updates in
-place; `win_access.make_writable` creates the folders in Program Files with one UAC question. CorelDRAW is not on
+place; `win_access.make_writable` creates the folders in Program Files with one UAC question.
+«Вид кнопок…» (`Look`: buttons in a row, height, caption size) adds one `<style id="switcher-look">`
+before `</head>` that overrides the page's `.preset` rule. CorelDRAW is not on
 CI: check a changed page by opening it in Chromium with a fake `window.external` (Playwright) and
 clicking buttons; never commit the user's own docker files (tests use `conftest.make_docker`).
 
