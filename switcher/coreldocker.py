@@ -485,3 +485,376 @@ class Docker:
         shutil.rmtree(last, ignore_errors=True)
         log.info("corel docker: the files of %s are put back as they were", self.folder)
         return True
+
+
+# -- carrying a docker to another computer ---------------------------------------------------------
+#
+# A docker is saved as a .zip of its files and installed from it into the Addons of every CorelDRAW
+# on the other computer — as a docker of its own: another folder, another caption if that one is
+# taken, and new GUIDs (CorelDRAW tells dockers, their menu commands and their pages apart by the
+# GUIDs in AppUI.xslt; two add-ons with the same ones clash).  The VBA macros are left out: their
+# project name ("Politext") is compiled into the .gms and two projects of one name clash too; every
+# button of the installed docker does its work with the page's own code instead.
+
+PACKAGE_SKIP = (".gms", ".bas", ".bak", ".tmp", ".log", ".zip")
+PACKAGE_LIMIT = 50 * 1024 * 1024  # bytes in all: a docker is a few hundred KB
+PACKAGE_FILES = 300
+INSTALLED = "switcher-install.json"  # marks a docker that Switcher installed (and its GUIDs)
+REGISTRATION = ("AppUI.xslt", "UserUI.xslt")
+CORELDRAW_EXE = "CorelDRW.exe"
+
+
+def docker_files(folder) -> dict[str, bytes]:
+    """The files of a docker that go to another computer: "Politext.html" → its bytes (paths with "/").
+    Not the macros, Switcher's own marks, nor copies left by Docker Studio."""
+    folder = Path(folder)
+    if _page_of(folder) is None:
+        raise DockerError("В этой папке нет докера из Docker Studio (нет его файла .html со списком кнопок).")
+    files: dict[str, bytes] = {}
+    total = 0
+    for path in sorted(folder.rglob("*")):
+        relative = path.relative_to(folder).as_posix()
+        name = path.name.lower()
+        if not path.is_file() or name.endswith(PACKAGE_SKIP) or ".bak" in name or name.startswith(".switcher-") \
+                or name == INSTALLED or name == MACROS.lower():
+            continue
+        data = path.read_bytes()
+        total += len(data)
+        if total > PACKAGE_LIMIT or len(files) >= PACKAGE_FILES:
+            raise DockerError("В папке докера слишком много файлов — это не похоже на докер.")
+        files[relative] = data
+    return files
+
+
+def export_docker(folder, target) -> int:
+    """Save a docker into a .zip for another computer; how many files went in."""
+    import zipfile
+
+    files = docker_files(folder)
+    top = Path(folder).name
+    target = Path(target)
+    temp = target.with_name(f".switcher-{os.getpid()}-{target.name}.tmp")
+    try:
+        with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as package:
+            for relative, data in files.items():
+                package.writestr(f"{top}/{relative}", data)
+        os.replace(temp, target)
+    except OSError as exc:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise DockerError(f"Не удалось сохранить {target}: {exc}") from exc
+    log.info("corel docker: %d files of %s saved to %s", len(files), folder, target)
+    return len(files)
+
+
+def _safe_part(part: str) -> bool:
+    return bool(part) and part not in (".", "..") and not re.search(r'[<>:"|?*\x00-\x1f]', part)
+
+
+def read_package(source) -> dict[str, bytes]:
+    """The docker's files from a .zip made by ``export_docker`` (or any zip of a docker's folder), or
+    from a docker's folder.  Names that would land outside the docker's folder are refused."""
+    import zipfile
+
+    source = Path(source)
+    if source.is_dir():
+        return docker_files(source)
+    try:
+        package = zipfile.ZipFile(source)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise DockerError(f"Это не файл докера (нужен .zip, сохранённый в Switcher): {exc}") from exc
+    files: dict[str, bytes] = {}
+    with package:
+        entries = [entry for entry in package.infolist() if not entry.is_dir()]
+        if len(entries) > PACKAGE_FILES or sum(e.file_size for e in entries) > PACKAGE_LIMIT:
+            raise DockerError("В архиве слишком много файлов — это не похоже на докер.")
+        parts = []
+        for entry in entries:
+            path = entry.filename.replace("\\", "/").split("/")
+            if entry.filename.startswith(("/", "\\")) or not all(_safe_part(p) for p in path):
+                raise DockerError(f"В архиве файл с недопустимым именем: {entry.filename}")
+            parts.append((path, entry))
+        tops = {path[0] for path, _ in parts if len(path) > 1}
+        strip = len(tops) == 1 and all(len(path) > 1 for path, _ in parts)  # everything in one folder
+        for path, entry in parts:
+            name = "/".join(path[1:] if strip else path)
+            lower = name.lower()
+            if lower.endswith(PACKAGE_SKIP) or ".bak" in lower or lower.split("/")[-1] in (INSTALLED, MACROS.lower()):
+                continue
+            files[name] = package.read(entry)
+    if _page_in(files) is None:
+        raise DockerError("В архиве нет докера из Docker Studio (нет файла .html со списком кнопок).")
+    return files
+
+
+def _page_in(files: dict[str, bytes]) -> str | None:
+    """Which of the files is the docker's page."""
+    for name in sorted(files, key=lambda n: (n.count("/"), n.lower())):
+        if name.lower().endswith((".html", ".htm")) and "/" not in name:
+            try:
+                if CONFIG_MARK in files[name].decode("utf-8-sig"):
+                    return name
+            except UnicodeDecodeError:
+                continue
+    return None
+
+
+def _file_named(files: dict[str, bytes], wanted: str) -> str | None:
+    return next((name for name in files if name.lower() == wanted.lower()), None)
+
+
+@dataclass(frozen=True)
+class Target:
+    """A CorelDRAW on this computer: where its add-ons go, and what the user is shown."""
+    addons: Path
+    label: str
+
+
+def corel_targets(roots: list[str] | None = None) -> list[Target]:
+    """Every CorelDRAW on this computer (…\\Corel\\…\\Programs64\\CorelDRW.exe) and its Addons folder."""
+    if roots is None:
+        roots = []
+        for variable in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+            base = os.environ.get(variable)
+            if base and os.path.join(base, "Corel") not in roots:
+                roots.append(os.path.join(base, "Corel"))
+    found: list[Target] = []
+    seen: set[str] = set()
+    for root in roots:
+        for depth in range(1, 4):
+            pattern = os.path.join(glob.escape(root), *["*"] * depth, CORELDRAW_EXE)
+            for exe in sorted(glob.glob(pattern)):
+                programs = Path(exe).parent
+                key = os.path.normcase(str(programs))
+                if key in seen:
+                    continue
+                seen.add(key)
+                suite = programs.parent.relative_to(root).parts
+                found.append(Target(programs / "Addons", "CorelDRAW " + " ".join(suite).replace(
+                    "CorelDRAW Graphics Suite", "").strip() if suite else "CorelDRAW"))
+    return found
+
+
+_TAG = re.compile(r"<(itemData|dockerData)\b([^>]*)>", re.DOTALL)
+_ATTR = re.compile(r'\b(\w+)\s*=\s*"([^"]*)"')
+_GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def own_guids(app_ui: str) -> dict[str, str]:
+    """The docker's own GUIDs in its AppUI.xslt: {"command": …, "browser": …, "docker": …} — the menu
+    command that opens it, its web page and the docker itself (CorelDRAW's own GUIDs are left out)."""
+    roles: dict[str, str] = {}
+    for tag, attributes in _TAG.findall(app_ui):
+        values = dict(_ATTR.findall(attributes))
+        guid = values.get("guid", "")
+        if not _GUID.match(guid):
+            continue
+        role = "docker" if tag == "dockerData" else "browser" if values.get("type") == "browser" else "command"
+        roles.setdefault(role, guid.lower())
+    if set(roles) != {"command", "browser", "docker"}:
+        raise DockerError("Не понял файл AppUI.xslt докера: в нём нет его команды, страницы или самого докера.")
+    return roles
+
+
+def _xml_text(value: str) -> str:
+    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def captions_in(addons) -> dict[str, Path]:
+    """The captions of the dockers already in a CorelDRAW's Addons (lower case) → their folders."""
+    return {key: folder for key, (_caption, folder) in _captions(addons).items()}
+
+
+def _captions(addons) -> dict[str, tuple[str, Path]]:
+    """Lower-case caption → (the caption as CorelDRAW shows it, its docker's folder)."""
+    import html as html_text
+
+    found: dict[str, tuple[str, Path]] = {}
+    for app_ui in sorted(Path(addons).glob("*/AppUI.xslt")):
+        try:
+            text = _read(app_ui)[0]
+        except (OSError, UnicodeDecodeError):
+            continue
+        for tag, attributes in _TAG.findall(text):
+            caption = dict(_ATTR.findall(attributes)).get("userCaption")
+            if tag == "dockerData" and caption:
+                shown = html_text.unescape(caption).strip()
+                found.setdefault(shown.lower(), (shown, app_ui.parent))
+    return found
+
+
+def _installed_mark(folder: Path) -> dict:
+    try:
+        mark = json.loads((folder / INSTALLED).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return mark if isinstance(mark, dict) else {}
+
+
+def suggest_caption(name: str, targets: list[Target]) -> str:
+    """The docker's name if no CorelDRAW here has a docker of that name yet (or only one Switcher
+    installed under it), else «POLITEXT 2», «POLITEXT 3»…"""
+    name = name.strip() or "Докер"
+    taken: set[str] = set()
+    for target in targets:
+        for caption, folder in captions_in(target.addons).items():
+            if str(_installed_mark(folder).get("caption", "")).lower() != caption:
+                taken.add(caption)
+    candidate, number = name, 1
+    while candidate.lower() in taken:
+        number += 1
+        candidate = f"{name} {number}"
+    return candidate
+
+
+_CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s",
+                      "t", "u", "f", "h", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"], strict=True))
+
+
+def folder_for(caption: str) -> str:
+    """The folder of an installed docker: Latin letters, digits and "_" only (CorelDRAW opens the page
+    by a path in AppUI.xslt), ending with "_Switcher": «Плиты 2» → "Plity_2_Switcher"."""
+    letters = "".join(_CYRILLIC.get(ch.lower(), ch).upper() if ch.isupper() and ch.lower() in _CYRILLIC
+                      else _CYRILLIC.get(ch, ch) for ch in caption)
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", letters).strip("_")[:40]
+    return f"{slug or 'Docker'}_Switcher"
+
+
+def prepare_install(files: dict[str, bytes], caption: str, folder: str, guids: dict[str, str]) -> dict[str, bytes]:
+    """The docker's files as a docker of its own: its caption, folder and GUIDs, and no macros."""
+    import html as html_text
+
+    caption = caption.strip()
+    page_name = _page_in(files)
+    names = {wanted: _file_named(files, wanted) for wanted in REGISTRATION}
+    if page_name is None:
+        raise DockerError("В файлах нет докера из Docker Studio (нет файла .html со списком кнопок).")
+    if None in names.values():
+        raise DockerError("В файлах докера нет AppUI.xslt и UserUI.xslt — без них CorelDRAW его не покажет.")
+    app_ui_name, user_ui_name = names["AppUI.xslt"], names["UserUI.xslt"]
+    app_ui, app_bom = _read_bytes(files[app_ui_name])
+    old = own_guids(app_ui)
+    renamed = {old[role]: guids[role] for role in old}
+
+    def new_guids(text: str) -> str:
+        return re.sub("|".join(map(re.escape, renamed)), lambda m: renamed[m.group(0).lower()], text,
+                      flags=re.IGNORECASE)
+
+    result = dict(files)
+    # AppUI.xslt: the GUIDs, the caption, and the page's path in the new folder
+    app_ui = new_guids(app_ui)
+    app_ui = re.sub(r'(\buserCaption\s*=\s*")[^"]*(")', lambda m: m.group(1) + _xml_text(caption) + m.group(2),
+                    app_ui)
+    app_ui = re.sub(r"(\[VGAppAddonsDir\][/\\])[^/\\\"]+(?=[/\\])", lambda m: m.group(1) + folder, app_ui)
+    result[app_ui_name] = _encoded(app_ui, app_bom)
+    user_ui, user_bom = _read_bytes(files[user_ui_name])
+    result[user_ui_name] = _encoded(new_guids(user_ui), user_bom)
+    # the page: its name, no macros (every button does its work with the page's own code)
+    page, page_bom = _read_bytes(files[page_name])
+    config, begin, end = find_config(page)
+    config.update(name=caption, macroProjectName="", generateVbaMacros=False)
+    for item in config["presets"]:
+        if isinstance(item, dict) and item.get("actionType", PAGE_SETUP) == PAGE_SETUP:
+            item["generatedMacroName"] = ""
+    page = blue_guideline(page[:begin] + script_json(config) + page[end:])
+    shown = html_text.escape(caption, quote=False)
+    page = re.sub(r"(<title>)[^<]*(</title>)", lambda m: m.group(1) + shown + m.group(2), page, count=1)
+    page = re.sub(r'(<div class="panel-title">\s*)[^<\s][^<]*?(\s*<)', lambda m: m.group(1) + shown + m.group(2),
+                  page, count=1)
+    result[page_name] = _encoded(page, page_bom)
+    # Docker Studio's project, if any: the same name, folder and GUIDs
+    manifest_name = _file_named(files, MANIFEST)
+    if manifest_name is not None:
+        text, bom = _read_bytes(files[manifest_name])
+        try:
+            project = json.loads(new_guids(text))
+        except ValueError:
+            project = None
+        if isinstance(project, dict):
+            project.update(Name=caption, FolderName=folder, GenerateVbaMacros=False, MacroProjectName="")
+            newline = "\r\n" if "\r\n" in text else "\n"
+            result[manifest_name] = _encoded(json.dumps(project, ensure_ascii=True, indent=2).replace("\n", newline),
+                                             bom)
+    return result
+
+
+def _read_bytes(data: bytes) -> tuple[str, bool]:
+    try:
+        return data.decode("utf-8-sig"), data.startswith(b"\xef\xbb\xbf")
+    except UnicodeDecodeError as exc:
+        raise DockerError(f"Файл докера не в UTF-8: {exc}") from exc
+
+
+def _unblock(path: Path) -> None:
+    """Take off Windows' «downloaded from another computer» mark: with it CorelDRAW shows the docker empty."""
+    if os.name == "nt":
+        try:
+            os.remove(f"{path}:Zone.Identifier")
+        except OSError:
+            pass
+
+
+def install_docker(files: dict[str, bytes], caption: str, targets: list[Target],
+                   make_writable=None) -> list[Path]:
+    """Install the docker into every CorelDRAW in ``targets`` under ``caption``; its folders.
+
+    A docker Switcher installed before under the same caption is updated in place (same folder, same
+    GUIDs).  ``make_writable(folders)`` is called once, for all the folders Windows does not let
+    Switcher create or change (it asks the user for an administrator's right)."""
+    caption = caption.strip()
+    if not caption:
+        raise DockerError("Напишите, как назвать докер в CorelDRAW.")
+    if not targets:
+        raise DockerError("На этом компьютере не найден CorelDRAW.")
+    plans: list[tuple[Path, dict[str, str]]] = []
+    for target in targets:
+        shown, owner = _captions(target.addons).get(caption.lower(), (caption, None))
+        mark = _installed_mark(owner) if owner is not None else {}
+        if owner is not None and str(mark.get("caption", "")).lower() != caption.lower():
+            raise DockerError(f"В {target.label} уже есть докер «{shown}» — назовите этот по-другому.")
+        if owner is not None:  # Switcher's own, from before: updated in place, with its GUIDs
+            saved = mark.get("guids") if isinstance(mark.get("guids"), dict) else {}
+            guids = {role: str(saved.get(role)) for role in ("command", "browser", "docker")
+                     if _GUID.match(str(saved.get(role, "")))}
+            plans.append((owner, guids))
+            continue
+        name, number = folder_for(caption), 1
+        while (target.addons / name).exists():
+            number += 1
+            name = f"{folder_for(caption)}{number}"
+        plans.append((target.addons / name, {}))
+    fresh = {role: str(uuid.uuid4()) for role in ("command", "browser", "docker")}
+    prepared = [(folder, prepare_install(files, caption, folder.name, {**fresh, **guids}), {**fresh, **guids})
+                for folder, guids in plans]
+
+    def write_all() -> list[Path]:
+        refused = []
+        for folder, content, guids in prepared:
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                for relative, data in content.items():
+                    path = folder.joinpath(*relative.split("/"))
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    Docker._write(path, data)
+                    _unblock(path)
+                mark = {"caption": caption, "guids": guids, "by": "Switcher"}
+                Docker._write(folder / INSTALLED, json.dumps(mark, ensure_ascii=False, indent=2).encode("utf-8"))
+            except PermissionError:
+                refused.append(folder)
+        return refused
+
+    try:
+        refused = write_all()
+        if refused and make_writable is not None:
+            make_writable(refused)
+            refused = write_all()
+    except OSError as exc:
+        raise DockerError(f"Не удалось записать докер: {exc}") from exc
+    if refused:
+        raise DockerError("Windows не разрешила записать докер в " + ", ".join(str(f) for f in refused) + ".")
+    for folder, _content, _guids in prepared:
+        log.info("corel docker: «%s» installed into %s", caption, folder)
+    return [folder for folder, _content, _guids in prepared]

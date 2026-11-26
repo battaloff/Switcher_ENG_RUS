@@ -4,6 +4,7 @@ import dataclasses
 import json
 import re
 import sys
+from pathlib import Path
 
 import pytest
 from conftest import make_docker
@@ -319,3 +320,224 @@ def test_windows_gives_the_right_to_change_a_folder(tmp_path):
     assert "(OI)(CI)(M)" in listed, listed
     with pytest.raises(FileNotFoundError):
         win_access.grant_modify(str(tmp_path / "нет такой"))
+
+
+# -- carrying the docker to another computer -------------------------------------------------------
+
+def test_the_docker_is_saved_into_a_file_without_its_macros(docker_folder, tmp_path):
+    import zipfile
+
+    (docker_folder / "dockerstudio.json.before-audit-migration-20260724.bak").write_text("old")
+    (docker_folder / ".switcher-12-Politext.html.tmp").write_text("half")
+    (docker_folder / "img").mkdir()
+    (docker_folder / "img" / "logo.png").write_bytes(b"\x89PNG")
+    target = tmp_path / "POLITEXT — докер.zip"
+    assert coreldocker.export_docker(docker_folder, target) == 6
+    names = sorted(zipfile.ZipFile(target).namelist())
+    assert names == ["Politext/AppUI.xslt", "Politext/Coreldrw.addon", "Politext/Politext.html",
+                     "Politext/UserUI.xslt", "Politext/dockerstudio.json", "Politext/img/logo.png"]
+    files = coreldocker.read_package(target)
+    assert sorted(files) == [name.split("/", 1)[1] for name in names]
+    assert files["Politext.html"] == (docker_folder / "Politext.html").read_bytes()
+    assert coreldocker.read_package(docker_folder) == files  # a docker's folder will do as well
+    with pytest.raises(DockerError):
+        coreldocker.export_docker(tmp_path / "nothing", tmp_path / "x.zip")
+
+
+def test_a_bad_file_is_refused(tmp_path, docker_folder):
+    import zipfile
+
+    def package(entries: dict) -> Path:
+        path = tmp_path / f"p{len(list(tmp_path.glob('p*.zip')))}.zip"
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data in entries.items():
+                archive.writestr(name, data)
+        return path
+
+    page = (docker_folder / "Politext.html").read_bytes()
+    assert sorted(coreldocker.read_package(package({"Politext.html": page, "AppUI.xslt": b"x"}))) == [
+        "AppUI.xslt", "Politext.html"]  # files at the top of the archive
+    for name in ("../evil.html", "/etc/evil.html", "Politext/../../evil.html", "C:/evil.html", "a/b:c.html"):
+        with pytest.raises(DockerError, match="недопустимым"):
+            coreldocker.read_package(package({name: page}))
+    with pytest.raises(DockerError, match="нет докера"):
+        coreldocker.read_package(package({"readme.txt": b"hello"}))
+    (tmp_path / "not a zip.zip").write_text("hello")
+    with pytest.raises(DockerError, match="не файл докера"):
+        coreldocker.read_package(tmp_path / "not a zip.zip")
+
+
+def install_targets(root, *versions):
+    for version in versions:
+        programs = root / "Corel" / "CorelDRAW Graphics Suite" / version / "Programs64"
+        (programs / "Addons").mkdir(parents=True)
+        (programs / "CorelDRW.exe").write_bytes(b"MZ")
+    return coreldocker.corel_targets([str(root / "Corel")])
+
+
+def test_corels_are_found_with_their_addons(tmp_path):
+    for suite in ("CorelDRAW Graphics Suite/27/Programs64", "CorelDRAW Graphics Suite 2025/Programs64",
+                  "CorelDRAW Graphics Suite 2020 (64-Bit)/Programs64", "Corel PHOTO-PAINT/Programs64"):
+        folder = tmp_path / "Corel" / suite
+        folder.mkdir(parents=True)
+        (folder / ("CorelDRW.exe" if "PHOTO" not in suite else "CorelPP.exe")).write_bytes(b"MZ")
+    targets = coreldocker.corel_targets([str(tmp_path / "Corel"), str(tmp_path / "no such")])
+    assert sorted(t.label for t in targets) == ["CorelDRAW 2020 (64-Bit)", "CorelDRAW 2025", "CorelDRAW 27"]
+    assert all(t.addons.name == "Addons" and t.addons.parent.name == "Programs64" for t in targets)
+
+
+def test_the_docker_is_installed_as_one_of_its_own(tmp_path, docker_folder):
+    """On the other computer there may be a POLITEXT already — another one, with the same GUIDs and
+    the same macro project: the installed docker must not clash with it."""
+    from conftest import DOCKER_GUIDS, make_docker
+
+    other_pc = tmp_path / "other"
+    other = make_docker(other_pc, version="27")  # the other computer's own POLITEXT
+    other_files = {p.name: p.read_bytes() for p in other.iterdir()}
+    targets = coreldocker.corel_targets([str(other_pc / "Corel")])
+    assert [t.label for t in targets] == ["CorelDRAW 27"]
+    files = coreldocker.read_package(docker_folder)
+    caption = coreldocker.suggest_caption("POLITEXT", targets)
+    assert caption == "POLITEXT 2"
+    with pytest.raises(DockerError, match="уже есть докер «POLITEXT»"):
+        coreldocker.install_docker(files, "politext", targets)
+    (folder,) = coreldocker.install_docker(files, caption, targets)
+    assert folder == targets[0].addons / "POLITEXT_2_Switcher"
+    assert {p.name: p.read_bytes() for p in other.iterdir()} == other_files  # the other docker untouched
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "AppUI.xslt", "Coreldrw.addon", "Politext.html", "UserUI.xslt", "dockerstudio.json",
+        "switcher-install.json"]  # no macros
+    app_ui = (folder / "AppUI.xslt").read_text(encoding="utf-8")
+    guids = coreldocker.own_guids(app_ui)
+    assert not set(guids.values()) & set(DOCKER_GUIDS.values()) and len(set(guids.values())) == 3
+    assert not any(old in (folder / name).read_text(encoding="utf-8") for old in DOCKER_GUIDS.values()
+                   for name in ("AppUI.xslt", "UserUI.xslt", "dockerstudio.json", "Politext.html"))
+    assert app_ui.count('userCaption="POLITEXT 2"') == 2 and "[VGAppAddonsDir]/POLITEXT_2_Switcher/Politext.html" in app_ui
+    assert "2cc24a3e-fe24-4708-9a74-9c75406eebcd" in app_ui  # CorelDRAW's own GUIDs stay
+    user_ui = (folder / "UserUI.xslt").read_text(encoding="utf-8")
+    assert user_ui.count(guids["command"]) == 2 and "3eaa9bbe-28fd-4672-9128-02974ee96332" in user_ui
+    assert (folder / "AppUI.xslt").read_bytes().count(b"\r\n") > 10  # line ends as they were
+    page = (folder / "Politext.html").read_text(encoding="utf-8")
+    config = find_config(page)[0]
+    assert (config["name"], config["macroProjectName"], config["generateVbaMacros"]) == ("POLITEXT 2", "", False)
+    assert [p["generatedMacroName"] for p in config["presets"]] == ["", "", "", ""]  # the page does the work
+    assert "<title>POLITEXT 2</title>" in page and re.search(r'class="panel-title">\s*POLITEXT 2\s*<', page)
+    assert coreldocker._BLUE in page
+    project = json.loads((folder / "dockerstudio.json").read_text(encoding="utf-8"))
+    assert (project["Name"], project["FolderName"], project["GenerateVbaMacros"], project["MacroProjectName"]) == (
+        "POLITEXT 2", "POLITEXT_2_Switcher", False, "")
+    assert (project["CommandGuid"], project["BrowserGuid"], project["DockerGuid"]) == (
+        guids["command"], guids["browser"], guids["docker"])
+    # Switcher finds both dockers and edits the installed one like any other
+    assert sorted(f.name for f in find_dockers([str(other_pc / "Corel")])) == ["POLITEXT_2_Switcher", "Politext"]
+    installed = Docker(folder, backups=tmp_path / "copies")
+    assert len(installed.load()) == 4 and installed.name == "POLITEXT 2"
+    # installed again (an update): the same folder and GUIDs, no second copy
+    assert coreldocker.install_docker(files, "POLITEXT 2", targets) == [folder]
+    assert coreldocker.own_guids((folder / "AppUI.xslt").read_text(encoding="utf-8")) == guids
+    assert sorted(p.name for p in targets[0].addons.iterdir()) == ["POLITEXT_2_Switcher", "Politext"]
+    assert coreldocker.suggest_caption("POLITEXT 2", targets) == "POLITEXT 2"  # its own name is not «taken»
+    # another name: a docker of its own again
+    (second,) = coreldocker.install_docker(files, "Плиты офсет", targets)
+    assert second.name == "Plity_ofset_Switcher" and coreldocker.own_guids(
+        (second / "AppUI.xslt").read_text(encoding="utf-8")) != guids
+
+
+def test_it_goes_into_every_corel_chosen_and_asks_windows_once(tmp_path, docker_folder, monkeypatch):
+    from conftest import make_docker
+
+    other_pc = tmp_path / "other"
+    make_docker(other_pc, version="27")
+    make_docker(other_pc, version="26", name="Something", caption="Другой докер")
+    targets = coreldocker.corel_targets([str(other_pc / "Corel")])
+    assert [t.label for t in targets] == ["CorelDRAW 26", "CorelDRAW 27"]
+    files = coreldocker.read_package(docker_folder)
+    closed = {t.addons for t in targets}  # Program Files: closed until Windows allows it
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if self.parent in closed:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_mkdir(self, *args, **kwargs)
+
+    asked = []
+
+    def make_writable(folders):
+        asked.append(sorted(f.parent.parent.parent.name for f in folders))
+        closed.clear()
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    folders = coreldocker.install_docker(files, "POLITEXT 2", targets, make_writable)
+    assert asked == [["26", "27"]] and all((f / "Politext.html").exists() for f in folders)
+    closed.update(t.addons for t in targets)
+    with pytest.raises(DockerError, match="не разрешила"):
+        coreldocker.install_docker(files, "POLITEXT 3", targets)  # nobody to ask
+    with pytest.raises(DockerError, match="Напишите"):
+        coreldocker.install_docker(files, " ", targets)
+    with pytest.raises(DockerError, match="не найден CorelDRAW"):
+        coreldocker.install_docker(files, "X", [])
+
+
+def test_folder_names_are_latin():
+    assert coreldocker.folder_for("POLITEXT 2") == "POLITEXT_2_Switcher"
+    assert coreldocker.folder_for("Плиты офсет") == "Plity_ofset_Switcher"
+    assert coreldocker.folder_for("ЁЖ & Co!") == "EZH_Co_Switcher"
+    assert coreldocker.folder_for("«»") == "Docker_Switcher"
+
+
+def test_files_without_registration_are_not_installed(tmp_path, docker_folder):
+    targets = install_targets(tmp_path / "pc", "27")
+    files = coreldocker.read_package(docker_folder)
+    del files["UserUI.xslt"]
+    with pytest.raises(DockerError, match="AppUI.xslt и UserUI.xslt"):
+        coreldocker.install_docker(files, "POLITEXT", targets)
+    files = coreldocker.read_package(docker_folder)
+    files["AppUI.xslt"] = b"<xsl:stylesheet/>"
+    with pytest.raises(DockerError, match="Не понял файл AppUI.xslt"):
+        coreldocker.install_docker(files, "POLITEXT", targets)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' rights to folders")
+def test_windows_creates_folders_for_the_docker_with_one_question(tmp_path):
+    import ctypes
+    import subprocess
+    import threading
+
+    from switcher.platform import win_access
+
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        pytest.skip("Windows would ask the person at the keyboard (UAC)")
+    folders = [tmp_path / "Addons (64-Bit)" / "POLITEXT_2_Switcher", tmp_path / "Другая" / "Папка"]
+    (tmp_path / "Другая").mkdir()
+    result: list = []
+    worker = threading.Thread(target=lambda: result.append(win_access.make_writable([str(f) for f in folders],
+                                                                                      timeout=30)), daemon=True)
+    worker.start()
+    worker.join(60)
+    assert result == [None], "cmd as administrator did not finish"
+    for folder in folders:
+        assert folder.is_dir()
+        listed = subprocess.run(["icacls", str(folder)], capture_output=True, check=True).stdout.decode(
+            "ascii", "replace")
+        assert "(OI)(CI)(M)" in listed, listed
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows' «downloaded from another computer» mark")
+def test_the_mark_of_another_computer_is_taken_off(tmp_path, docker_folder):
+    """With Windows' «downloaded from the internet» mark CorelDRAW shows a docker empty (colorscript.ru)."""
+    package = tmp_path / "POLITEXT — докер.zip"
+    coreldocker.export_docker(docker_folder, package)
+    with open(f"{package}:Zone.Identifier", "w", encoding="ascii") as mark:  # as a browser or a messenger leaves it
+        mark.write("[ZoneTransfer]\nZoneId=3\n")
+    other_pc = tmp_path / "other"
+    targets = install_targets(other_pc, "27")
+    (folder,) = coreldocker.install_docker(coreldocker.read_package(package), "POLITEXT", targets)
+    for path in folder.iterdir():
+        with pytest.raises(OSError):
+            open(f"{path}:Zone.Identifier", encoding="ascii").close()
+    page = folder / "Politext.html"
+    with open(f"{page}:Zone.Identifier", "w", encoding="ascii") as mark:  # copied by hand before Switcher
+        mark.write("[ZoneTransfer]\nZoneId=3\n")
+    coreldocker.install_docker(coreldocker.read_package(package), "POLITEXT", targets)  # installed again
+    with pytest.raises(OSError):
+        open(f"{page}:Zone.Identifier", encoding="ascii").close()

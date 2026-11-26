@@ -214,7 +214,8 @@ def selftest(report: str | None = None) -> int:
         from .platform import win_access
 
         assert win_access.user_sid().startswith("S-1-"), "the user's account is not read"
-        return f"докеров CorelDRAW на этом компьютере: {len(coreldocker.find_dockers())}"
+        return (f"CorelDRAW на этом компьютере: {len(coreldocker.corel_targets())}, "
+                f"докеров из Docker Studio: {len(coreldocker.find_dockers())}")
 
     if "app" in state:
         step("AutoHotkey", autohotkey)

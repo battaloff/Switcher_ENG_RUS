@@ -37,6 +37,12 @@ DOCKER_PAGE = """<!DOCTYPE html>
 <html>
 <head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><title>POLITEXT</title></head>
 <body>
+  <div class="panel">
+    <div class="panel-title">
+      POLITEXT
+      <span class="counter" id="presetCounter"></span>
+    </div>
+  </div>
   <div id="presets"></div>
   <script type="text/javascript">
     var config = %s;
@@ -85,6 +91,55 @@ Private Sub ApplyProductionPreset(ByVal widthMM As Double, ByVal heightValueMM A
                                   ByVal guidelineDistanceMM As Double, ByVal absoluteHeight As Boolean)
 End Sub
 """
+DOCKER_GUIDS = {"command": "589a0b6a-7d25-4595-8e98-a1a7dc130ec7", "browser": "791aad5e-f03b-451d-91f6-d61094e67ff3",
+                "docker": "537a340d-032f-43f1-9c0c-048168fa0924"}
+DOCKER_APP_UI = """<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:frmwrk="Corel Framework Data">
+  <xsl:template match="uiConfig/items">
+    <xsl:copy>
+      <xsl:apply-templates select="node()|@*"/>
+      <itemData guid="{command}"
+                noBmpOnMenu="true"
+                type="checkButton"
+                check="*Docker('{docker}')"
+                dynamicCategory="2cc24a3e-fe24-4708-9a74-9c75406eebcd"
+                userCaption="{caption}"
+                enable="true"/>
+      <itemData guid="{browser}"
+                type="browser"
+                href="[VGAppAddonsDir]/{folder}/Politext.html"
+                enable="true"
+                isHost="true"
+                appStyles="false" />
+    </xsl:copy>
+  </xsl:template>
+  <xsl:template match="uiConfig/dockers">
+    <xsl:copy>
+      <xsl:apply-templates select="node()|@*"/>
+      <dockerData guid="{docker}"
+                  userCaption="{caption}"
+                  wantReturn="true"
+                  focusStyle="noThrow">
+        <container>
+          <item dock="fill" margin="0,0,0,0" guidRef="{browser}"/>
+        </container>
+      </dockerData>
+    </xsl:copy>
+  </xsl:template>
+</xsl:stylesheet>
+"""
+DOCKER_USER_UI = """<?xml version="1.0" encoding="UTF-8"?>
+<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:frmwrk="Corel Framework Data">
+  <xsl:template match="commandBarData[@guid='3eaa9bbe-28fd-4672-9128-02974ee96332']/menu">
+    <xsl:copy>
+      <xsl:apply-templates select="node()|@*"/>
+      <xsl:if test="not(./item[@guidRef='{command}'])">
+        <item guidRef="{command}"/>
+      </xsl:if>
+    </xsl:copy>
+  </xsl:template>
+</xsl:stylesheet>
+"""
 # (id, group, title, subtitle, colour, width, height, exact height, guideline); the last one is of
 # the group «510» but was added after «525», as buttons added later in Docker Studio are
 DOCKER_PRESETS = (
@@ -95,12 +150,19 @@ DOCKER_PRESETS = (
 )
 
 
-def make_docker(root, bom: bool = False, newline: str = "\n", macros: bool = True):
+def make_docker(root, bom: bool = False, newline: str = "\n", macros: bool = True, version: str = "26",
+                name: str = "Politext", caption: str = "POLITEXT"):
     """A docker's folder under ``root``, where CorelDRAW keeps its add-ons; the folder."""
     import json
 
-    folder = root / "Corel" / "CorelDRAW Graphics Suite" / "26" / "Programs64" / "Addons" / "Politext"
+    programs = root / "Corel" / "CorelDRAW Graphics Suite" / version / "Programs64"
+    folder = programs / "Addons" / name
     folder.mkdir(parents=True)
+    (programs / "CorelDRW.exe").write_bytes(b"MZ")
+    (folder / "AppUI.xslt").write_bytes(DOCKER_APP_UI.format(**DOCKER_GUIDS, caption=caption, folder=name).replace(
+        "\n", "\r\n").encode())
+    (folder / "UserUI.xslt").write_bytes(DOCKER_USER_UI.format(**DOCKER_GUIDS).replace("\n", "\r\n").encode())
+    (folder / "Coreldrw.addon").write_bytes(b"")
     page, project = [], []
     for order, (ident, group, title, subtitle, color, width, height, exact, guideline) in enumerate(DOCKER_PRESETS):
         mode = "Absolute" if exact else "AddToCurrent"
@@ -113,11 +175,14 @@ def make_docker(root, bom: bool = False, newline: str = "\n", macros: bool = Tru
                         "Color": color, "ActionType": "ProductionPageSetup", "Width": width, "Height": height,
                         "Unit": "Millimeter", "HeightMode": mode, "GuidelineDistanceMm": guideline,
                         "MacroProject": "", "MacroName": "", "MacroFileName": "", "MinimumCorelVersion": 25})
-    config = {"name": "POLITEXT", "macroProjectName": "Politext", "generateVbaMacros": True,
+    config = {"name": caption, "macroProjectName": "Politext", "generateVbaMacros": True,
               "minimumCorelVersion": 25, "columns": 4, "presets": page}
     html = DOCKER_PAGE % json.dumps(config, ensure_ascii=False, separators=(",", ":"))
     (folder / "Politext.html").write_bytes((b"\xef\xbb\xbf" if bom else b"") + html.replace("\n", newline).encode())
-    studio = {"SchemaVersion": 4, "Name": "POLITEXT", "FolderName": "Politext", "Columns": 4, "Presets": project}
+    studio = {"SchemaVersion": 4, "Name": caption, "FolderName": name, "Columns": 4,
+              "CommandGuid": DOCKER_GUIDS["command"], "BrowserGuid": DOCKER_GUIDS["browser"],
+              "DockerGuid": DOCKER_GUIDS["docker"], "GenerateVbaMacros": True, "MacroProjectName": "Politext",
+              "Presets": project}
     (folder / "dockerstudio.json").write_bytes(json.dumps(studio, indent=2).replace("\n", "\r\n").encode())
     if macros:
         (folder / "Macros.bas").write_bytes(DOCKER_MACROS.replace("\n", "\r\n").encode())

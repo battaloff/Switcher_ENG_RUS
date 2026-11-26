@@ -149,7 +149,13 @@ numbers compiled in). `coreldocker.py` reads and rewrites the two lists (`Docker
 copies in `%APPDATA%\Switcher\corel_docker`); a button whose numbers no longer match its macro
 loses `generatedMacroName`, and the page's own JavaScript does the same work. The folder is in
 Program Files: `platform/win_access.py` runs `icacls` elevated once (UAC) to give the user Modify on
-that folder. Page «Докер Corel» in `gui.py`, dialog in `coreldocker_dialogs.py`. CorelDRAW is not on
+that folder. Page «Докер Corel» in `gui.py`, dialogs in `coreldocker_dialogs.py`. «Сохранить докер в
+файл…» zips the docker (no .gms/.bas/backups); «Установить из файла…» installs it into every chosen
+CorelDRAW (`corel_targets`: …\Programs64\CorelDRW.exe) as a docker of its own — folder
+`<Caption>_Switcher`, new GUIDs for its command, page and docker in AppUI/UserUI.xslt, the caption
+«POLITEXT 2» when one is taken, no VBA (a .gms project name would clash), Windows' Zone.Identifier
+mark removed (with it the docker shows empty), `switcher-install.json` so a reinstall updates in
+place; `win_access.make_writable` creates the folders in Program Files with one UAC question. CorelDRAW is not on
 CI: check a changed page by opening it in Chromium with a fake `window.external` (Playwright) and
 clicking buttons; never commit the user's own docker files (tests use `conftest.make_docker`).
 

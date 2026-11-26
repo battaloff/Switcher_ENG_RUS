@@ -912,8 +912,17 @@ class SettingsWindow(ctk.CTkToplevel):
                                         justify="left", wraplength=620)
         self.docker_hint.pack(side="bottom", fill="x", pady=(10, 0))
 
-        head = ctk.CTkFrame(page, border_width=1)
-        head.pack(fill="x", pady=(14, 0), padx=(0, 4))
+        box = ctk.CTkFrame(page, border_width=1)
+        box.pack(fill="x", pady=(14, 0), padx=(0, 4))
+        transfer = ctk.CTkFrame(box, fg_color="transparent", corner_radius=0)
+        transfer.pack(side="bottom", fill="x", padx=16, pady=(0, 10))
+        ctk.CTkLabel(transfer, text="Другой компьютер:", font=self.fonts["small"], text_color=MUTED).pack(side="left")
+        self.docker_export = self._button(transfer, "Сохранить докер в файл…", self.export_docker_file, height=30)
+        self.docker_export.pack(side="left", padx=(10, 0))
+        self._button(transfer, "Установить из файла…", self.install_docker_file, height=30).pack(side="left",
+                                                                                                padx=(8, 0))
+        head = ctk.CTkFrame(box, fg_color="transparent", corner_radius=0)
+        head.pack(fill="x")
         self._button(head, "Другая папка…", self.choose_docker_folder).pack(side="right", padx=(8, 12), pady=10)
         self.docker_allow = self._button(head, "Разрешить изменения", self.allow_docker_changes, primary=True)
         names = ctk.CTkFrame(head, fg_color="transparent", corner_radius=0)
@@ -1013,6 +1022,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.docker_path.configure(wraplength=250 if ready and not self.docker_writable else 400)
         for button in (*self.docker_buttons, self.docker_undo):
             button.configure(state="normal" if ready and self.docker_writable else "disabled")
+        self.docker_export.configure(state="normal" if ready else "disabled")
         if ready and self.docker_writable and not docker.can_undo():
             self.docker_undo.configure(state="disabled")
         self.docker_hint.configure(text=error or note or (
@@ -1079,6 +1089,96 @@ class SettingsWindow(ctk.CTkToplevel):
         if not error and not self.docker_writable:
             self.docker_hint.configure(text="Разрешение получено, но Windows всё ещё не даёт менять файлы докера. "
                                             "Закройте CorelDRAW и нажмите «Разрешить изменения» ещё раз.")
+
+    def export_docker_file(self) -> None:
+        """Save the docker into a .zip to install on another computer."""
+        from . import coreldocker
+
+        if self.docker is None:
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Сохранить докер для другого компьютера",
+                                            defaultextension=".zip", initialfile=f"{self.docker.name} — докер.zip",
+                                            filetypes=[("Докер CorelDRAW", "*.zip")])
+        if not path:
+            return
+        try:
+            coreldocker.export_docker(self.docker.folder, path)
+        except coreldocker.DockerError as exc:
+            messagebox.showerror("Switcher", str(exc), parent=self)
+            return
+        self.docker_hint.configure(text=f"Докер сохранён: {path}. Перенесите этот файл на другой компьютер (флешкой, "
+                                        "по сети, в мессенджере) и там в Switcher нажмите «Установить из файла…».")
+
+    def install_docker_file(self) -> None:
+        """Install a docker saved on another computer into this computer's CorelDRAW."""
+        from . import coreldocker
+        from .coreldocker_dialogs import InstallDialog
+
+        path = filedialog.askopenfilename(parent=self, title="Файл докера (.zip, сохранённый в Switcher)",
+                                          filetypes=[("Докер CorelDRAW", "*.zip"), ("Все файлы", "*.*")])
+        if not path:
+            return
+        try:
+            files = coreldocker.read_package(path)
+            config = coreldocker.find_config(files[coreldocker._page_in(files)].decode("utf-8-sig"))[0]
+        except coreldocker.DockerError as exc:
+            messagebox.showerror("Switcher", str(exc), parent=self)
+            return
+        targets = coreldocker.corel_targets()
+        if not targets:
+            messagebox.showerror("Switcher", "На этом компьютере не найден CorelDRAW: Switcher ищет его в папке "
+                                             "Program Files\\Corel.", parent=self)
+            return
+        name = str(config.get("name") or Path(path).stem)
+        InstallDialog(self, lambda caption, chosen: self._install_docker(files, caption, chosen), name=name,
+                      buttons=len(config["presets"]), targets=targets,
+                      suggested=coreldocker.suggest_caption(name, targets))
+
+    def _install_docker(self, files: dict, caption: str, targets: list) -> None:
+        from . import coreldocker
+
+        self.docker_hint.configure(text="Устанавливаю докер… Если Windows спросит разрешение — ответьте «Да» (вопрос "
+                                        "может открыться позади этого окна).")
+        owner = self.winfo_id()
+
+        def make_writable(folders):
+            from .platform import win_access
+
+            try:
+                win_access.make_writable([str(folder) for folder in folders], owner=owner)
+            except win_access.Refused:
+                raise coreldocker.DockerError("Вы не разрешили установку — ничего не изменилось.") from None
+            except OSError as exc:
+                raise coreldocker.DockerError(f"Windows не дала разрешение на установку: {exc}") from exc
+
+        def work():
+            try:
+                folders = coreldocker.install_docker(files, caption, targets,
+                                                     make_writable if sys.platform == "win32" else None)
+                error = ""
+            except coreldocker.DockerError as exc:
+                folders, error = [], str(exc)
+            self.ui.call(lambda: self.winfo_exists() and self._docker_installed(caption, targets, folders, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _docker_installed(self, caption: str, targets: list, folders: list, error: str) -> None:
+        from . import coreldocker
+
+        if error:
+            self.docker_hint.configure(text=error)
+            messagebox.showerror("Switcher", error, parent=self)
+            return
+        self._remember_docker(str(folders[0]))
+        try:
+            self._show_docker(coreldocker.Docker(folders[0]))
+        except coreldocker.DockerError as exc:
+            self.docker_hint.configure(text=str(exc))
+        where = "\n".join(f"{target.label}: {folder}" for target, folder in zip(targets, folders, strict=True))
+        text = (f"Докер «{caption}» установлен.\n\n{where}\n\nПерезапустите CorelDRAW и откройте докер в меню "
+                f"«Окно» → «Окна настройки» → «{caption}».")
+        self.docker_hint.configure(text=f"Докер «{caption}» установлен. Перезапустите CorelDRAW.")
+        messagebox.showinfo("Switcher", text, parent=self)
 
     def _docker_selected(self) -> int | None:
         selected = self.docker_tree.selection()

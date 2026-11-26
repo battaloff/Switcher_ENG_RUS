@@ -123,3 +123,22 @@ def grant_modify(folder: str, timeout: float = 120.0, owner: int = 0) -> None:
     code = run_as_administrator(icacls, f'"{folder}" /grant "*{user_sid()}:(OI)(CI)M"', timeout, owner)
     if code:
         raise OSError(f"icacls ended with the code {code}")
+
+
+def make_writable(folders: list[str], timeout: float = 120.0, owner: int = 0) -> None:
+    """Create the folders (where they are missing) and let the current user change them — all with
+    one question of Windows."""
+    folders = [os.path.abspath(str(folder)).rstrip("\\/") for folder in folders]
+    if not folders:
+        return
+    for folder in folders:
+        if '"' in folder or "%" in folder or "\n" in folder:
+            raise OSError(f"a folder name cmd cannot be given: {folder}")
+    grant = f'"*{user_sid()}:(OI)(CI)M"'
+    steps = [f'(if not exist "{folder}\\" mkdir "{folder}") & icacls "{folder}" /grant {grant} /Q'
+             for folder in folders]
+    cmd = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cmd.exe")
+    # /s: cmd takes everything between the first and the last quote as the command, inner quotes and all
+    code = run_as_administrator(cmd, '/d /s /c "' + " & ".join(steps) + '"', timeout, owner)
+    if code:
+        raise OSError(f"cmd ended with the code {code}")

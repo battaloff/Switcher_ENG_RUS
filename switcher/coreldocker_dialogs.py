@@ -24,6 +24,11 @@ SWATCHES = 16  # how many colours fit in the row
 WHAT_IT_DOES = ("По нажатию кнопка ставит эту ширину всем страницам документа, меняет их высоту, убирает старые "
                 "направляющие и ставит новую горизонтальную.")
 OTHER_KIND = "У этой кнопки другое действие: здесь меняются только её группа, цвет и надписи."
+INSTALL_NOTE = ("Докер встанет отдельным докером: в свою папку и со своими ключами (GUID), поэтому не помешает "
+                "другим докерам и макросам на этом компьютере, даже с тем же названием.")
+MACROS_NOTE = ("Макросы VBA с ним не ставятся (у них общее имя проекта, оно мешало бы другим макросам): все кнопки "
+               "работают кодом самой панели докера — так же, как изменённые в Switcher кнопки. После установки "
+               "перезапустите CorelDRAW.")
 BAD_NUMBER = object()
 
 
@@ -203,6 +208,71 @@ class PresetDialog(ctk.CTkToplevel):
         if self.base.sets_page:
             preset = dataclasses.replace(preset, width=width, height=height, guideline=guideline, absolute=absolute)
         error = problem(preset) or self.on_done(preset)
+        if error:
+            self.status.configure(text=error)
+            return
+        self.destroy()
+
+
+class InstallDialog(ctk.CTkToplevel):
+    """Install a docker from a file: its caption in CorelDRAW and which CorelDRAWs get it.
+    ``on_done(caption, targets)`` returns an error to show, or None when the installation is started."""
+
+    def __init__(self, master, on_done: Callable[[str, list], str | None], name: str, buttons: int,
+                 targets: list, suggested: str):
+        super().__init__(master)
+        _set_icon(self)
+        self.title("Установка докера — Switcher")
+        self.geometry("560x" + str(420 + 50 * len(targets)))
+        self.resizable(False, False)
+        self.on_done = on_done
+        self.targets = targets
+        body = ctk.CTkFont(size=13)
+        bold = ctk.CTkFont(size=13, weight="bold")
+        small = ctk.CTkFont(size=12)
+        pad = {"padx": 18, "fill": "x"}
+        ctk.CTkLabel(self, text=f"Докер «{name}», кнопок: {buttons}", font=ctk.CTkFont(size=16, weight="bold"),
+                     anchor="w").pack(pady=(16, 4), **pad)
+        ctk.CTkLabel(self, text=INSTALL_NOTE, font=small, text_color=MUTED, anchor="w", justify="left",
+                     wraplength=520).pack(**pad)
+        ctk.CTkLabel(self, text="Название в CorelDRAW", font=bold, anchor="w").pack(pady=(14, 4), **pad)
+        self.caption = ctk.CTkEntry(self, height=34, font=body)
+        self.caption.insert(0, suggested)
+        self.caption.pack(**pad)
+        ctk.CTkLabel(self, text="Куда установить", font=bold, anchor="w").pack(pady=(14, 4), **pad)
+        self.chosen = []
+        for target in targets:
+            var = tk.BooleanVar(value=True)
+            ctk.CTkCheckBox(self, text=target.label, variable=var, font=body).pack(pady=(4, 0), **pad)
+            ctk.CTkLabel(self, text=str(target.addons), font=small, text_color=MUTED, anchor="w", justify="left",
+                         wraplength=490).pack(padx=(48, 18), fill="x")
+            self.chosen.append(var)
+        ctk.CTkLabel(self, text=MACROS_NOTE, font=small, text_color=MUTED, anchor="w", justify="left",
+                     wraplength=520).pack(pady=(14, 0), **pad)
+        self.status = ctk.CTkLabel(self, text="", font=small, text_color=MUTED, anchor="w", justify="left",
+                                   wraplength=520)
+        self.status.pack(pady=(8, 0), **pad)
+        buttons_row = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        buttons_row.pack(side="bottom", fill="x", padx=18, pady=16)
+        ctk.CTkButton(buttons_row, text="Отмена", width=110, height=34, font=body, fg_color=NEUTRAL,
+                      hover_color=NEUTRAL_HOVER, text_color=TEXT, border_width=1, border_color=CARD_BORDER,
+                      command=self.destroy).pack(side="right")
+        ctk.CTkButton(buttons_row, text="Установить", width=130, height=34, font=body, command=self.done).pack(
+            side="right", padx=(0, 8))
+        self.bind("<Escape>", lambda _e: self.destroy(), add="+")
+        self.after(50, self.lift)
+        self.after(80, self.caption.focus_set)
+
+    def done(self) -> None:
+        caption = self.caption.get().strip()
+        targets = [target for target, var in zip(self.targets, self.chosen, strict=True) if var.get()]
+        if not caption:
+            self.status.configure(text="Напишите, как назвать докер в CorelDRAW.")
+            return
+        if not targets:
+            self.status.configure(text="Отметьте, в какой CorelDRAW установить докер.")
+            return
+        error = self.on_done(caption, targets)
         if error:
             self.status.configure(text=error)
             return

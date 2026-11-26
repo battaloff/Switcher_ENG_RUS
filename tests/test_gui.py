@@ -900,3 +900,62 @@ def test_a_docker_button_is_set_up_in_its_dialog(window):
     dialog.label.insert("end", " 5 мм")
     dialog.done()
     assert taken[-1] == Preset("Кресты 5 мм", "Макросы", color="#111111", id="m", action="RunMacro")
+
+
+def run_handed_over(window, done, seconds: float = 5) -> None:
+    """Work done in a thread reports through ui.call: run what it hands over until ``done()``."""
+    deadline = time.time() + seconds
+    while time.time() < deadline and not done():
+        while not window.ui._calls.empty():
+            window.ui._calls.get_nowait()()
+        ROOT.update()
+        time.sleep(0.02)
+
+
+def test_the_docker_goes_to_another_computer(window, docker_folder, monkeypatch, tmp_path):
+    from conftest import make_docker
+
+    from switcher import coreldocker
+    from switcher.coreldocker_dialogs import InstallDialog
+
+    monkeypatch.setenv("SWITCHER_HOME", str(tmp_path / "home"))
+    window.config_copy.corel_docker.folder = str(docker_folder)
+    window.show("docker")
+    ROOT.update()
+    assert window.docker_export.cget("state") == "normal"
+    # this computer: the docker is saved into a file
+    package = tmp_path / "POLITEXT — докер.zip"
+    monkeypatch.setattr(gui.filedialog, "asksaveasfilename", lambda **kw: str(package))
+    window.export_docker_file()
+    assert package.exists() and "Установить из файла" in window.docker_hint.cget("text")
+    # the other computer: CorelDRAW 27 with a POLITEXT of its own
+    other_pc = tmp_path / "other"
+    make_docker(other_pc, version="27")
+    monkeypatch.setattr(coreldocker, "corel_targets",
+                        lambda roots=None, real=coreldocker.corel_targets: real([str(other_pc / "Corel")]))
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kw: str(package))
+    monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: window.errors.append(("info", *a)))
+    window.install_docker_file()
+    ROOT.update()
+    dialog = [w for w in window.winfo_children() if isinstance(w, InstallDialog)][-1]
+    assert dialog.caption.get() == "POLITEXT 2" and len(dialog.chosen) == 1
+    dialog.caption.delete(0, "end")
+    dialog.caption.insert(0, "POLITEXT")
+    dialog.done()  # the name is taken there: told, and nothing installed yet
+    run_handed_over(window, lambda: window.errors)
+    assert "уже есть докер «POLITEXT»" in str(window.errors[-1])
+    dialog = InstallDialog(window, lambda caption, chosen: window._install_docker(
+        coreldocker.read_package(package), caption, chosen), name="POLITEXT", buttons=4,
+        targets=coreldocker.corel_targets(), suggested="POLITEXT 2")
+    ROOT.update()
+    dialog.done()
+    run_handed_over(window, lambda: window.errors[-1][0] == "info")
+    assert "Докер «POLITEXT 2» установлен" in window.errors[-1][2]
+    installed = other_pc / "Corel" / "CorelDRAW Graphics Suite" / "27" / "Programs64" / "Addons" / "POLITEXT_2_Switcher"
+    assert window.app.saved[-1].corel_docker.folder == str(installed)
+    assert window.docker_title.cget("text") == "POLITEXT 2 — кнопок: 4"
+    # a file that is not a docker
+    (tmp_path / "x.zip").write_text("nothing")
+    monkeypatch.setattr(gui.filedialog, "askopenfilename", lambda **kw: str(tmp_path / "x.zip"))
+    window.install_docker_file()
+    assert "не файл докера" in str(window.errors[-1])
