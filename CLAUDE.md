@@ -140,6 +140,19 @@ Enter, never typed (typing drops its suggestions down)), `savebar_ui.py` (a non-
 window; button work runs on its own thread). Its hotkeys are swallowed in
 `WindowsBackend._hook_filter` only while its dialog is in front. Settings: `Config.save_bar`.
 
+**CorelDRAW docker.** The user's docker «POLITEXT» was made by «Corel Docker Studio» (a .NET tool;
+not on GitHub, not found on their PC) and lives in `C:\Program Files\Corel\CorelDRAW Graphics
+Suite\26\Programs64\Addons\Politext`: `Politext.html` (the panel, an IE web view talking to
+`window.external.Application`; its buttons are the JSON `var config = {…};`), `dockerstudio.json`
+(the same list as Docker Studio's project), `Politext.gms` + `Macros.bas` (a VBA macro per button,
+numbers compiled in). `coreldocker.py` reads and rewrites the two lists (`Docker.load/save/undo`,
+copies in `%APPDATA%\Switcher\corel_docker`); a button whose numbers no longer match its macro
+loses `generatedMacroName`, and the page's own JavaScript does the same work. The folder is in
+Program Files: `platform/win_access.py` runs `icacls` elevated once (UAC) to give the user Modify on
+that folder. Page «Докер Corel» in `gui.py`, dialog in `coreldocker_dialogs.py`. CorelDRAW is not on
+CI: check a changed page by opening it in Chromium with a fake `window.external` (Playwright) and
+clicking buttons; never commit the user's own docker files (tests use `conftest.make_docker`).
+
 **Packaging.** `packaging/windows/build.py`: prebuilt language model → PyInstaller one-dir
 `Switcher.exe` (linux/macos backends excluded) → `--selftest` of the bundle → Inno Setup installer.
 Modules imported only on demand must also be imported in `gui_main.selftest` so a missing one fails

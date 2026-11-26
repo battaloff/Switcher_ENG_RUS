@@ -182,7 +182,8 @@ def selftest(report: str | None = None) -> int:
         ui = Ui(state["app"])
         ui.open_settings(welcome=True)
         ui.root.update()
-        for tab in ("main", "keys", "snippets", "savebar", "ahk", "ahk_keys", "ai", "rules", "stats", "updates"):
+        for tab in ("main", "keys", "snippets", "savebar", "docker", "ahk", "ahk_keys", "ai", "rules", "stats",
+                    "updates"):
             ui.window.show(tab)
             ui.root.update()
         ui.root.destroy()
@@ -208,9 +209,17 @@ def selftest(report: str | None = None) -> int:
 
         return f"известных папок Windows: {len(known_folders())}"
 
+    def corel_docker():
+        from . import coreldocker, coreldocker_dialogs  # noqa: F401
+        from .platform import win_access
+
+        assert win_access.user_sid().startswith("S-1-"), "the user's account is not read"
+        return f"докеров CorelDRAW на этом компьютере: {len(coreldocker.find_dockers())}"
+
     if "app" in state:
         step("AutoHotkey", autohotkey)
         step("панель «Сохранить как»", save_bar)
+        step("докер CorelDRAW", corel_docker)
         step("окно настроек", gui)
     text = "\n".join(lines) + f"\n{'SELFTEST OK' if ok else 'SELFTEST FAILED'}\n"
     path = report or os.path.join(tempfile.gettempdir(), "switcher-selftest.log")

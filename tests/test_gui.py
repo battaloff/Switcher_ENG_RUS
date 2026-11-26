@@ -774,3 +774,129 @@ def test_a_button_for_a_new_folder_is_set_up_in_its_dialog(window):
     assert taken[0].action == NEW_FOLDER and taken[0].label == "Новая папка" and taken[0].color == "#3E63DD"
     assert window.put_save_button(None, taken[0]) is None
     assert window.save_button_tree.item("4")["values"][2] == "создаёт новую папку"
+
+
+def docker_rows(window, column: int = 1) -> list[str]:
+    tree = window.docker_tree
+    return [str(tree.item(item)["values"][column]) for item in tree.get_children()]
+
+
+def test_the_docker_page(window, docker_folder, monkeypatch, tmp_path):
+    from switcher import coreldocker
+    from switcher.coreldocker import Preset, find_config
+
+    monkeypatch.setenv("SWITCHER_HOME", str(tmp_path / "home"))  # the copies for «Отменить» go there
+    window.config_copy.corel_docker.folder = str(docker_folder)
+    window.show("docker")
+    ROOT.update()
+
+    def in_docker() -> list[str]:
+        page = (docker_folder / "Politext.html").read_text(encoding="utf-8")
+        return [p["title"] for p in find_config(page)[0]["presets"]]
+
+    assert docker_rows(window) == ["450×370", "510×+32", "510×+36", "525×+94,5"]
+    assert window.docker_title.cget("text") == "POLITEXT — кнопок: 4"
+    assert window.docker_hint.cget("text") == window.DOCKER_READY
+    assert window.docker_undo.cget("state") == "disabled" and window.docker_buttons[0].cget("state") == "normal"
+    assert window.docker_allow.winfo_manager() == ""  # nothing to ask Windows for
+    # a new button is written into the docker at once
+    new = Preset("900×+70", "900", "→45mm", "#0EA5E9", 900, 70, guideline=45)
+    assert window.put_docker_preset(None, new) is None
+    assert in_docker() == ["450×370", "510×+32", "510×+36", "525×+94,5", "900×+70"] == docker_rows(window)
+    assert docker_rows(window, 3)[-1] == "900 мм" and docker_rows(window, 4)[-1] == "+70 мм"
+    assert window.docker_tree.selection() == (window.docker_presets[-1].id,)
+    assert window.docker_undo.cget("state") == "normal"
+    # the selected one moves inside its group, is copied, and the copy is removed
+    window.docker_tree.selection_set("b2")
+    window.move_docker_preset(1)
+    assert in_docker()[1:3] == ["510×+36", "510×+32"] and window.docker_tree.selection() == ("b2",)
+    window.move_docker_preset(1)  # the last of «510» stays there
+    assert in_docker()[1:3] == ["510×+36", "510×+32"]
+    window.copy_docker_preset()
+    assert in_docker()[1:4] == ["510×+36", "510×+32", "510×+32"]
+    window.remove_docker_preset()
+    assert in_docker() == ["450×370", "510×+36", "510×+32", "525×+94,5", "900×+70"]
+    window.docker_tree.selection_set(window.docker_presets[-1].id)
+    window.move_docker_group(-1)
+    assert in_docker() == ["450×370", "510×+36", "510×+32", "900×+70", "525×+94,5"]
+    window.undo_docker()
+    assert in_docker() == ["450×370", "510×+36", "510×+32", "525×+94,5", "900×+70"] == docker_rows(window)
+    # an edited button: its dialog hands it back to the page
+    assert window.put_docker_preset(0, dataclasses_replace(window.docker_presets[0], title="A2")) is None
+    assert in_docker()[0] == "A2"
+    # a folder closed by Windows: nothing can be changed until the user allows it
+    monkeypatch.setattr(coreldocker.Docker, "writable", lambda self: False)
+    window._show_docker(window.docker)
+    ROOT.update()
+    assert window.docker_allow.winfo_manager() == "pack" and window.docker_hint.cget("text") == window.DOCKER_CLOSED
+    assert all(b.cget("state") == "disabled" for b in (*window.docker_buttons, window.docker_undo))
+    window.add_docker_preset()
+    window.edit_docker_preset()
+    assert not [w for w in window.winfo_children() if type(w).__name__ == "PresetDialog"]
+    # no docker on this computer
+    window._dockers_found([])
+    assert window.docker_title.cget("text") == "Докер не найден" and docker_rows(window) == []
+    assert window.docker_hint.cget("text") == window.DOCKER_NOT_FOUND
+    # one found in CorelDRAW's folders is remembered
+    window.config_copy.corel_docker.folder = ""
+    window._dockers_found([tmp_path / "nothing", docker_folder])
+    assert window.app.saved[-1].corel_docker.folder == str(docker_folder) and len(docker_rows(window)) == 5
+
+
+def dataclasses_replace(obj, **changes):
+    import dataclasses
+
+    return dataclasses.replace(obj, **changes)
+
+
+def test_a_docker_button_is_set_up_in_its_dialog(window):
+    from switcher.coreldocker import Preset
+    from switcher.coreldocker_dialogs import EXACT_TITLE, WHAT_IT_DOES, PresetDialog
+
+    def fill(entry, text: str) -> None:
+        entry.delete(0, "end")
+        entry.insert(0, text)
+        dialog._numbers_changed()
+
+    taken = []
+    dialog = PresetDialog(window, lambda preset: taken.append(preset), groups=["510", "525"],
+                          colors=["#3B82F6", "#10B981"], group="510", color="#3B82F6")
+    ROOT.update()
+    assert dialog.group.get() == "510" and dialog.status.cget("text") == WHAT_IT_DOES
+    dialog.done()
+    assert not taken and "надпись" in dialog.status.cget("text")
+    fill(dialog.width, "510")
+    fill(dialog.height, "47")
+    fill(dialog.guideline, "30")
+    assert (dialog.label.get(), dialog.subtitle.get()) == ("510×+47", "→30mm")  # the caption follows the numbers
+    assert dialog.sample.cget("text") == "510×+47\n→30mm" and dialog.sample.cget("fg_color") == "#3B82F6"
+    dialog.mode.set(EXACT_TITLE)
+    dialog._numbers_changed()
+    assert dialog.label.get() == "510×47"
+    fill(dialog.width, "пятьсот")
+    dialog.done()
+    assert not taken and "Ширина: напишите число" in dialog.status.cget("text")
+    fill(dialog.width, "510")
+    dialog.label.delete(0, "end")
+    dialog.label.insert(0, "Моя кнопка")  # written by hand: it stays whatever the numbers become
+    fill(dialog.height, "37,5")
+    assert dialog.label.get() == "Моя кнопка"
+    dialog.pick("#10b981")
+    assert dialog.swatches["#10B981"].cget("border_width") == 3 and dialog.swatches["#3B82F6"].cget("border_width") == 0
+    dialog.done()
+    assert taken == [Preset("Моя кнопка", "510", "→30mm", "#10B981", 510, 37.5, True, 30)]
+    # an existing button with its own caption keeps it; one of another kind has only its look to edit
+    own = Preset("745 × +90", "745", "→ 50 мм", "#8000FF", 745, 90, False, 50, "x")
+    dialog = PresetDialog(window, lambda preset: taken.append(preset), own, groups=["745"], colors=["#3B82F6"])
+    ROOT.update()
+    assert "#8000FF" in dialog.swatches  # its own colour is always offered
+    fill(dialog.height, "100")
+    dialog.done()
+    assert taken[-1] == Preset("745 × +90", "745", "→ 50 мм", "#8000FF", 745, 100, False, 50, "x")
+    macro = Preset("Кресты", "Макросы", color="#111111", id="m", action="RunMacro")
+    dialog = PresetDialog(window, lambda preset: taken.append(preset), macro)
+    ROOT.update()
+    assert dialog.width.cget("state") == "disabled"
+    dialog.label.insert("end", " 5 мм")
+    dialog.done()
+    assert taken[-1] == Preset("Кресты 5 мм", "Макросы", color="#111111", id="m", action="RunMacro")

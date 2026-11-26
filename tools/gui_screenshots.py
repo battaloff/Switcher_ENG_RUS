@@ -16,7 +16,8 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGES = ["main", "keys", "snippets", "savebar", "ahk", "ahk_keys", "ai", "rules", "stats", "updates", "editor"]
+PAGES = ["main", "keys", "snippets", "savebar", "docker", "ahk", "ahk_keys", "ai", "rules", "stats", "updates",
+         "editor"]
 SAMPLE_SCRIPT = """#Requires AutoHotkey v2.0
 #SingleInstance Force
 
@@ -91,6 +92,10 @@ def shoot(mode: str, out: Path) -> None:
         def install_roots(self):
             return [r"C:\Program Files\AutoHotkey"]
 
+    sys.path.insert(0, str(ROOT / "tests"))  # a CorelDRAW docker like the ones Docker Studio makes
+    from conftest import make_docker
+
+    App.config.corel_docker.folder = str(make_docker(Path(tempfile.mkdtemp())))
     App.ahk = ahk.AhkManager(App.config, system=Scripts())
     App.ahk._interpreters = [ahk.Interpreter(r"C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe", 2)]
     App.profile.add_rule("layout", "ghbdtn", "ru", source="learned")

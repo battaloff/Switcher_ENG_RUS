@@ -277,7 +277,7 @@ def _logo_image():
 
 class SettingsWindow(ctk.CTkToplevel):
     PAGES = (("main", "Основное"), ("keys", "Горячие клавиши"), ("snippets", "Дописывание"),
-             ("savebar", "Сохранить как"), ("ahk", "AutoHotkey"),
+             ("savebar", "Сохранить как"), ("docker", "Докер Corel"), ("ahk", "AutoHotkey"),
              ("ahk_keys", "Клавиши AHK"), ("ai", "Claude (ИИ)"), ("rules", "Правила"), ("stats", "Что я о вас знаю"),
              ("updates", "Обновления"))
 
@@ -343,6 +343,7 @@ class SettingsWindow(ctk.CTkToplevel):
             "keys": self._keys_tab(),
             "snippets": self._snippets_tab(),
             "savebar": self._savebar_tab(),
+            "docker": self._docker_tab(),
             "ahk": self._ahk_tab(),
             "ahk_keys": self._ahk_keys_tab(),
             "ai": self._ai_tab(),
@@ -414,6 +415,8 @@ class SettingsWindow(ctk.CTkToplevel):
             button.configure(fg_color=SELECTED if active else "transparent")
         if tab == "stats":
             self.refresh_stats()
+        if tab == "docker" and not self._docker_looked:
+            self.refresh_docker()
         if tab == "ahk":
             self.refresh_ahk()
         if tab == "ahk_keys":
@@ -864,6 +867,329 @@ class SettingsWindow(ctk.CTkToplevel):
         buttons = self.save_buttons()
         del buttons[index]
         self._save_save_buttons(buttons, min(index, len(buttons) - 1) if buttons else None)
+
+    # -- a CorelDRAW docker -----------------------------------------------------------
+
+    DOCKER_NOT_FOUND = ("Докер не найден. Switcher ищет докеры, сделанные в Docker Studio, в папке CorelDRAW "
+                        "(…\\Programs64\\Addons). Если ваш лежит в другом месте, нажмите «Другая папка…» и укажите "
+                        "папку докера — ту, где файл dockerstudio.json.")
+    DOCKER_CLOSED = ("Папка докера лежит в Program Files, а там Windows не даёт менять файлы. Нажмите «Разрешить "
+                     "изменения»: Windows один раз спросит разрешение, и Switcher сможет записывать кнопки — "
+                     "только в эту папку.")
+    DOCKER_READY = ("Изменения записываются в докер сразу. В CorelDRAW они появятся, когда вы закроете панель "
+                    "докера и откроете её снова (или перезапустите CorelDRAW).")
+
+    def _docker_tab(self):
+        page = self._page("Докер CorelDRAW", "Кнопки вашего докера в CorelDRAW: размер страницы и направляющая одним "
+                                             "нажатием. Здесь кнопки можно добавлять, менять и убирать — Switcher "
+                                             "сам записывает их в файлы докера.", scroll=False)
+        self.docker = None
+        self.docker_presets: list = []
+        self.docker_writable = False
+        self._docker_looked = False
+        self._docker_swatches: dict[str, tk.PhotoImage] = {}
+        lower = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        lower.pack(side="bottom", fill="x", pady=(8, 0))
+        upper = ctk.CTkFrame(page, fg_color="transparent", corner_radius=0)
+        upper.pack(side="bottom", fill="x", pady=(10, 0))
+        self.docker_buttons = [
+            self._button(upper, "Добавить…", self.add_docker_preset, width=110),
+            self._button(upper, "Изменить…", self.edit_docker_preset, width=110),
+            self._button(upper, "Копия", self.copy_docker_preset, width=80),
+            self._button(upper, "↑", lambda: self.move_docker_preset(-1), width=40),
+            self._button(upper, "↓", lambda: self.move_docker_preset(1), width=40),
+            self._button(lower, "Группу выше", lambda: self.move_docker_group(-1), width=120),
+            self._button(lower, "Группу ниже", lambda: self.move_docker_group(1), width=120),
+        ]
+        for index, button in enumerate(self.docker_buttons):
+            button.pack(side="left", padx=(0 if index in (0, 5) else 4 if index == 4 else 8, 0))
+        remove = self._button(upper, "Удалить", self.remove_docker_preset, danger=True, width=90)
+        remove.pack(side="right")
+        self.docker_buttons.append(remove)
+        self.docker_undo = self._button(lower, "Отменить последнее изменение", self.undo_docker, width=230)
+        self.docker_undo.pack(side="right")
+        self.docker_hint = ctk.CTkLabel(page, text="", font=self.fonts["small"], text_color=MUTED, anchor="w",
+                                        justify="left", wraplength=620)
+        self.docker_hint.pack(side="bottom", fill="x", pady=(10, 0))
+
+        head = ctk.CTkFrame(page, border_width=1)
+        head.pack(fill="x", pady=(14, 0), padx=(0, 4))
+        self._button(head, "Другая папка…", self.choose_docker_folder).pack(side="right", padx=(8, 12), pady=10)
+        self.docker_allow = self._button(head, "Разрешить изменения", self.allow_docker_changes, primary=True)
+        names = ctk.CTkFrame(head, fg_color="transparent", corner_radius=0)
+        names.pack(side="left", fill="x", expand=True, padx=(16, 0), pady=8)
+        self.docker_title = ctk.CTkLabel(names, text="Ищу докер…", font=self.fonts["body"], anchor="w", height=20)
+        self.docker_title.pack(fill="x")
+        self.docker_path = ctk.CTkLabel(names, text="", font=self.fonts["small"], text_color=MUTED, anchor="w",
+                                        justify="left", wraplength=330, height=16)
+        self.docker_path.pack(fill="x", pady=(2, 0))
+
+        card = self._card(page, expand=True)
+        columns = ("group", "title", "subtitle", "width", "height", "guideline")
+        self.docker_tree = ttk.Treeview(card, columns=columns, show=("tree", "headings"),
+                                        style="Switcher.Treeview", selectmode="browse")
+        self.docker_tree.column("#0", width=40, minwidth=40, stretch=False, anchor="center")
+        for col, title, width in (("group", "Группа", 86), ("title", "Надпись", 100), ("subtitle", "Под ней", 72),
+                                  ("width", "Ширина", 68), ("height", "Высота", 98),
+                                  ("guideline", "Направляющая", 110)):
+            self.docker_tree.heading(col, text=title, anchor="w")
+            self.docker_tree.column(col, width=width, minwidth=50, anchor="w", stretch=col == "guideline")
+        scroll = ctk.CTkScrollbar(card, command=self.docker_tree.yview)
+        self.docker_tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y", padx=(0, 4), pady=8)
+        self.docker_tree.pack(side="left", fill="both", expand=True, padx=(12, 0), pady=10)
+        self.docker_tree.bind("<Double-1>", lambda event: self.edit_docker_preset())
+        self._show_docker(None, looking=True)
+        return page
+
+    def refresh_docker(self) -> None:
+        """Show the docker from the settings; without one (or if it is gone), look in CorelDRAW's folders."""
+        from . import coreldocker
+
+        self._docker_looked = True
+        folder = self.config_copy.corel_docker.folder
+        if folder:
+            try:
+                return self._show_docker(coreldocker.Docker(folder))
+            except coreldocker.DockerError:
+                log.info("corel docker: nothing in %s any more; looking for one", folder)
+
+        def work():
+            found = coreldocker.find_dockers()
+            self.ui.call(lambda: self.winfo_exists() and self._dockers_found(found))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _dockers_found(self, found: list) -> None:
+        from . import coreldocker
+
+        for folder in found:
+            try:
+                docker = coreldocker.Docker(folder)
+            except coreldocker.DockerError:
+                continue
+            self._remember_docker(str(folder))
+            return self._show_docker(docker)
+        self._show_docker(None)
+
+    def _remember_docker(self, folder: str) -> None:
+        if self.app.config.corel_docker.folder == folder == self.config_copy.corel_docker.folder:
+            return
+        self.config_copy.corel_docker.folder = folder
+        live = copy.deepcopy(self.app.config)
+        live.corel_docker.folder = folder
+        self.app.update_config(live)
+
+    def _show_docker(self, docker, select: str | None = None, note: str = "", looking: bool = False) -> None:
+        """Fill the page from the docker's files as they are now."""
+        from . import coreldocker
+
+        self.docker, self.docker_presets, self.docker_writable, error = docker, [], False, ""
+        if docker is not None:
+            try:
+                self.docker_presets = docker.load()
+                self.docker_writable = docker.writable()
+            except coreldocker.DockerError as exc:
+                error = str(exc)
+        tree = self.docker_tree
+        tree.delete(*tree.get_children())
+        for preset in self.docker_presets:
+            tree.insert("", "end", iid=preset.id, image=self._docker_swatch(preset.color),
+                        values=(preset.group or "—", preset.title, preset.subtitle or "—", *preset.columns()))
+        if select is not None and tree.exists(select):
+            tree.selection_set(select)
+            tree.see(select)
+        if docker is None:
+            self.docker_title.configure(text="Ищу докер…" if looking else "Докер не найден")
+            self.docker_path.configure(text="")
+        else:
+            self.docker_title.configure(text=f"{docker.name} — кнопок: {len(self.docker_presets)}")
+            self.docker_path.configure(text=str(docker.folder))
+        ready = docker is not None and not error
+        if ready and not self.docker_writable:
+            self.docker_allow.pack(side="right", pady=10)
+        else:
+            self.docker_allow.pack_forget()
+        self.docker_path.configure(wraplength=250 if ready and not self.docker_writable else 400)
+        for button in (*self.docker_buttons, self.docker_undo):
+            button.configure(state="normal" if ready and self.docker_writable else "disabled")
+        if ready and self.docker_writable and not docker.can_undo():
+            self.docker_undo.configure(state="disabled")
+        self.docker_hint.configure(text=error or note or (
+            "" if looking else self.DOCKER_NOT_FOUND if docker is None else
+            self.DOCKER_READY if self.docker_writable else self.DOCKER_CLOSED))
+
+    def _docker_swatch(self, color: str) -> tk.PhotoImage:
+        """A small square of the button's colour for the list."""
+        if color not in self._docker_swatches:
+            image = tk.PhotoImage(master=self, width=16, height=16)
+            try:
+                image.put(color, to=(0, 0, 16, 16))
+            except tk.TclError:  # a colour written in a way Tk does not know
+                image.put("#8B8D98", to=(0, 0, 16, 16))
+            self._docker_swatches[color] = image
+        return self._docker_swatches[color]
+
+    def choose_docker_folder(self) -> None:
+        from . import coreldocker
+
+        start = str(self.docker.folder) if self.docker is not None else None
+        folder = filedialog.askdirectory(parent=self, title="Папка докера (в ней лежит dockerstudio.json)",
+                                         initialdir=start)
+        if not folder:
+            return
+        try:
+            docker = coreldocker.Docker(folder)
+        except coreldocker.DockerError as exc:
+            messagebox.showerror("Switcher", str(exc), parent=self)
+            return
+        self._remember_docker(str(docker.folder))
+        self._show_docker(docker)
+
+    def allow_docker_changes(self) -> None:
+        """Ask Windows (once) for the right to change files in the docker's folder."""
+        docker = self.docker
+        if docker is None:
+            return
+        if sys.platform != "win32":
+            self.docker_hint.configure(text="Разрешение нужно только в Windows.")
+            return
+        self.docker_allow.configure(state="disabled")
+        self.docker_hint.configure(text="Ответьте «Да» на вопрос Windows — он может открыться позади этого окна.")
+        owner = self.winfo_id()  # Windows shows its question over this window
+
+        def work():
+            from .platform import win_access
+
+            try:
+                win_access.grant_modify(str(docker.folder), owner=owner)
+                error = ""
+            except win_access.Refused:
+                error = "Вы не разрешили изменения — докер остался как был."
+            except OSError as exc:
+                log.warning("corel docker: no right to change %s: %s", docker.folder, exc)
+                error = f"Windows не дала разрешение: {exc}"
+            self.ui.call(lambda: self.winfo_exists() and self._docker_allowed(docker, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _docker_allowed(self, docker, error: str) -> None:
+        self.docker_allow.configure(state="normal")
+        self._show_docker(docker, note=error)
+        if not error and not self.docker_writable:
+            self.docker_hint.configure(text="Разрешение получено, но Windows всё ещё не даёт менять файлы докера. "
+                                            "Закройте CorelDRAW и нажмите «Разрешить изменения» ещё раз.")
+
+    def _docker_selected(self) -> int | None:
+        selected = self.docker_tree.selection()
+        ids = [preset.id for preset in self.docker_presets]
+        return ids.index(selected[0]) if selected and selected[0] in ids else None
+
+    def _save_docker(self, presets: list, select: str | None = None) -> str | None:
+        """Write the buttons into the docker and show them again; an error to tell, or None."""
+        from . import coreldocker
+
+        if self.docker is None:
+            return "Докер не найден."
+        try:
+            self.docker.save(presets)
+        except coreldocker.DockerError as exc:
+            self._show_docker(self.docker, select=select)
+            return str(exc)
+        self._show_docker(self.docker, select=select)
+        return None
+
+    def _change_docker(self, presets: list, select: str | None = None) -> None:
+        error = self._save_docker(presets, select)
+        if error:
+            messagebox.showerror("Switcher", error, parent=self)
+
+    def put_docker_preset(self, index: int | None, preset) -> str | None:
+        """Add (index None) or replace a button; an error to show in its dialog, or None."""
+        import uuid
+
+        presets = list(self.docker_presets)
+        if index is None:
+            preset = dataclasses.replace(preset, id=str(uuid.uuid4()))
+            presets.append(preset)
+        else:
+            presets[index] = preset
+        return self._save_docker(presets, preset.id)
+
+    def _docker_dialog(self, index: int | None, preset=None, group: str = "", color: str = "") -> None:
+        from . import coreldocker
+        from .coreldocker_dialogs import PresetDialog
+
+        PresetDialog(self, lambda new: self.put_docker_preset(index, new), preset,
+                     groups=coreldocker.groups_of(self.docker_presets),
+                     colors=[p.color for p in self.docker_presets], group=group, color=color)
+
+    def add_docker_preset(self) -> None:
+        """A new button: in the group of the selected one and in its colour."""
+        if self.docker is None or not self.docker_writable:
+            return
+        index = self._docker_selected()
+        near = self.docker_presets[index] if index is not None else None
+        self._docker_dialog(None, group=near.group if near else "", color=near.color if near else "")
+
+    def edit_docker_preset(self) -> None:
+        if self.docker is None or not self.docker_writable:
+            return
+        index = self._docker_selected()
+        if index is None:
+            return self.add_docker_preset()
+        self._docker_dialog(index, self.docker_presets[index])
+
+    def copy_docker_preset(self) -> None:
+        """A copy right after the selected button: the quick way to make a similar one."""
+        import uuid
+
+        index = self._docker_selected()
+        if index is None:
+            return
+        presets = list(self.docker_presets)
+        copy_ = dataclasses.replace(presets[index], id=str(uuid.uuid4()))
+        presets.insert(index + 1, copy_)
+        self._change_docker(presets, copy_.id)
+
+    def move_docker_preset(self, step: int) -> None:
+        from . import coreldocker
+
+        index = self._docker_selected()
+        if index is None:
+            return
+        presets, now = coreldocker.move(self.docker_presets, index, step)
+        if now != index:
+            self._change_docker(presets, presets[now].id)
+
+    def move_docker_group(self, step: int) -> None:
+        from . import coreldocker
+
+        index = self._docker_selected()
+        if index is None:
+            return
+        presets, now = coreldocker.move_group(self.docker_presets, index, step)
+        if presets != self.docker_presets:
+            self._change_docker(presets, presets[now].id)
+
+    def remove_docker_preset(self) -> None:
+        index = self._docker_selected()
+        if index is None:
+            return
+        presets = list(self.docker_presets)
+        del presets[index]
+        self._change_docker(presets, presets[min(index, len(presets) - 1)].id if presets else None)
+
+    def undo_docker(self) -> None:
+        from . import coreldocker
+
+        if self.docker is None:
+            return
+        try:
+            self.docker.undo()
+        except coreldocker.DockerError as exc:
+            messagebox.showerror("Switcher", str(exc), parent=self)
+        self._show_docker(self.docker)
 
     # -- AutoHotkey ----------------------------------------------------------------
 

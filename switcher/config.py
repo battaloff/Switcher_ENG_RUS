@@ -63,6 +63,12 @@ class SaveBar:
 
 
 @dataclass
+class CorelDocker:
+    """A CorelDRAW docker made by Docker Studio whose buttons are edited in the settings."""
+    folder: str = ""                   # the docker's folder; "": found in CorelDRAW's Addons
+
+
+@dataclass
 class Config:
     enabled: bool = True
     auto_switch: bool = True
@@ -99,6 +105,7 @@ class Config:
     ai: AI = field(default_factory=AI)
     updates: Updates = field(default_factory=Updates)
     save_bar: SaveBar = field(default_factory=SaveBar)
+    corel_docker: CorelDocker = field(default_factory=CorelDocker)
     config_version: int = 1           # bumped when an update has to adjust saved settings
 
     def to_dict(self) -> dict[str, Any]:
