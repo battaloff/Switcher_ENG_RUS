@@ -987,3 +987,41 @@ def test_the_size_of_the_docker_buttons_is_chosen(window, docker_folder, monkeyp
     dialog.usual()
     assert dialog.look() == Look(4, 42, 10)
     dialog.destroy()
+
+
+def test_a_docker_in_two_corels_is_changed_in_both(window, docker_folder, monkeypatch, tmp_path):
+    """The user's other computer: CorelDRAW 26 and 27. 0.8.2 remembered the copy in 26 and changed only it,
+    while the user works in 27."""
+    import os
+
+    from switcher import coreldocker
+    from switcher.coreldocker import Docker, Look
+
+    monkeypatch.setenv("SWITCHER_HOME", str(tmp_path / "home"))
+    other_pc = tmp_path / "other"
+    for version in ("26", "27"):
+        programs = other_pc / "Corel" / "CorelDRAW Graphics Suite" / version / "Programs64"
+        (programs / "Addons").mkdir(parents=True)
+        (programs / "CorelDRW.exe").write_bytes(b"MZ")
+    real_targets = coreldocker.corel_targets
+    monkeypatch.setattr(coreldocker, "corel_targets", lambda roots=None: real_targets([str(other_pc / "Corel")]))
+    in_26, in_27 = coreldocker.install_docker(coreldocker.read_package(docker_folder), "POLITEXT-2",
+                                              coreldocker.corel_targets())
+    Docker(in_26).save_look(Look(4, 24, 7))  # what 0.8.2 did: only the copy in 26 changed
+    later = os.path.getmtime(in_27 / "Politext.html") + 60
+    os.utime(in_26 / "Politext.html", (later, later))
+    window.config_copy.corel_docker.folder = str(in_26)
+    window.show("docker")
+    ROOT.update()
+    assert Docker(in_27).look() == Look(4, 24, 7)  # made the same as the copy changed last
+    assert window.docker_title.cget("text") == "POLITEXT-2 — кнопок: 4 · в CorelDRAW 26 и 27"
+    new = coreldocker.Preset("900×+70", "900", "→45mm", "#0EA5E9", 900, 70, guideline=45)
+    assert window.put_docker_preset(None, new) is None
+    assert [p.title for p in Docker(in_27).load()] == [p.title for p in Docker(in_26).load()]
+    assert len(Docker(in_27).load()) == 5
+    assert window.put_docker_look(Look(3, 50, 12), audit=False, live=False) is None
+    for folder in (in_26, in_27):
+        assert Docker(folder).look() == Look(3, 50, 12) and Docker(folder).options() == {"audit": False, "live": False}
+    window.undo_docker()
+    for folder in (in_26, in_27):
+        assert Docker(folder).look() == Look(4, 24, 7) and Docker(folder).options() == {"audit": True, "live": True}

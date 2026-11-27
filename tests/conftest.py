@@ -61,6 +61,24 @@ DOCKER_PAGE = """<!DOCTYPE html>
     var config = %s;
     var registeredEvents = [];
 
+    function getApplication() {
+      try {
+        return window.external && window.external.Application
+          ? window.external.Application
+          : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function getCorelMajor(app) {
+      try {
+        var version = app.VersionMajor || app.Version || 0;
+        var match = String(version).match(/\\d+/);
+        return match ? parseInt(match[0], 10) : 0;
+      } catch (e) { return 0; }
+    }
+
     function applyProductionPreset(preset, doc) {
       if (preset.guidelineDistanceMm > 0) {
         try {
@@ -189,7 +207,8 @@ def make_docker(root, bom: bool = False, newline: str = "\n", macros: bool = Tru
                         "Unit": "Millimeter", "HeightMode": mode, "GuidelineDistanceMm": guideline,
                         "MacroProject": "", "MacroName": "", "MacroFileName": "", "MinimumCorelVersion": 25})
     config = {"name": caption, "macroProjectName": "Politext", "generateVbaMacros": True,
-              "minimumCorelVersion": 25, "columns": 4, "presets": page}
+              "minimumCorelVersion": 25, "columns": 4, "showDocumentInfo": True, "enableLiveUpdates": True,
+              "showDocumentAudit": True, "presets": page}
     html = DOCKER_PAGE.replace("%s", json.dumps(config, ensure_ascii=False, separators=(",", ":")), 1)
     (folder / "Politext.html").write_bytes((b"\xef\xbb\xbf" if bom else b"") + html.replace("\n", newline).encode())
     studio = {"SchemaVersion": 4, "Name": caption, "FolderName": name, "Columns": 4,

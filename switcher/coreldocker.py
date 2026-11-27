@@ -292,6 +292,56 @@ def blue_guideline(html: str) -> str:
                       html, count=1)
 
 
+# the page asks CorelDRAW its version for every button it draws (39 calls on opening); every call from
+# the page into CorelDRAW is slow in CorelDRAW 27, where the docker hung for minutes: asked once
+_MAJOR = re.compile(r"([ \t]*)function getCorelMajor\(app\) \{(\r?\n)([ \t]*)try \{(.*?)"
+                    r"return match \? parseInt\(match\[0\], 10\) : 0;", re.DOTALL)
+
+
+def version_asked_once(html: str) -> str:
+    """The page's getCorelMajor remembers the answer (patched once; a page written another way is left)."""
+    if "corelMajorKnown" in html:
+        return html
+
+    def patch(m: re.Match) -> str:
+        indent, newline, inner, body = m.group(1), m.group(2), m.group(3), m.group(4)
+        return (f"{indent}var corelMajorKnown = null;{newline}"
+                f"{indent}function getCorelMajor(app) {{{newline}"
+                f"{inner}if (corelMajorKnown !== null) return corelMajorKnown;{newline}"
+                f"{inner}try {{{body}"
+                f"corelMajorKnown = match ? parseInt(match[0], 10) : 0;{newline}"
+                f"{inner}  return corelMajorKnown;")
+
+    return _MAJOR.sub(patch, html, count=1)
+
+
+_APPLICATION = re.compile(r"([ \t]*)function getApplication\(\) \{(\r?\n)([ \t]*)try \{(\r?\n)([ \t]*)return "
+                          r"(window\.external && window\.external\.Application\s*\?\s*window\.external\.Application"
+                          r"\s*:\s*null);", re.DOTALL)
+
+
+def application_kept(html: str) -> str:
+    """The page's getApplication keeps CorelDRAW's Application (it asked for it twice per button)."""
+    if "corelAppKnown" in html:
+        return html
+
+    def patch(m: re.Match) -> str:
+        indent, newline, inner, newline2, body, expression = m.groups()
+        return (f"{indent}var corelAppKnown = null;{newline}"
+                f"{indent}function getApplication() {{{newline}"
+                f"{inner}if (corelAppKnown) return corelAppKnown;{newline}"
+                f"{inner}try {{{newline2}"
+                f"{body}corelAppKnown = {' '.join(expression.split())};{newline}"
+                f"{body}return corelAppKnown;")
+
+    return _APPLICATION.sub(patch, html, count=1)
+
+
+def improved(html: str) -> str:
+    """What Switcher fixes in a page whenever it writes it."""
+    return application_kept(version_asked_once(blue_guideline(html)))
+
+
 class Docker:
     """One docker's folder: its buttons are read with ``load`` and written with ``save``."""
 
@@ -354,7 +404,7 @@ class Docker:
             raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
         config, begin, end = find_config(html)
         config["presets"] = self._page_items(config, presets)
-        new_html = blue_guideline(html[:begin] + script_json(config) + html[end:])
+        new_html = improved(html[:begin] + script_json(config) + html[end:])
         files = {self.page: _encoded(new_html, bom)}
         project = self._project(presets)
         if project is not None:
@@ -473,9 +523,19 @@ class Docker:
         except (OSError, UnicodeDecodeError) as exc:
             raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
 
-    def save_look(self, look: Look) -> None:
-        """How big the docker draws its buttons: into the page (and the number in a row into the
-        project, as Docker Studio keeps it); the files as they were are kept for ``undo``."""
+    def options(self) -> dict[str, bool]:
+        """The page's heavy parts: the document check, and refreshing it on every change in CorelDRAW."""
+        try:
+            config = find_config(_read(self.page)[0])[0]
+        except (OSError, UnicodeDecodeError) as exc:
+            raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
+        return {"audit": bool(config.get("showDocumentAudit", False)),
+                "live": bool(config.get("enableLiveUpdates", False))}
+
+    def save_look(self, look: Look, audit: bool | None = None, live: bool | None = None) -> None:
+        """How big the docker draws its buttons, and whether it checks the document (``audit``) and
+        refreshes on every change (``live``): into the page and the project; the files as they were
+        are kept for ``undo``."""
         error = look.problem()
         if error:
             raise DockerError(error)
@@ -485,7 +545,10 @@ class Docker:
             raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
         config, begin, end = find_config(html)
         config["columns"] = look.columns
-        files = {self.page: _encoded(with_look(html[:begin] + script_json(config) + html[end:], look), bom)}
+        switches = {"showDocumentAudit": audit, "enableLiveUpdates": live}
+        config.update({key: value for key, value in switches.items() if value is not None})
+        page = improved(with_look(html[:begin] + script_json(config) + html[end:], look))
+        files = {self.page: _encoded(page, bom)}
         try:
             text, project_bom = _read(self.manifest)
             project = json.loads(text)
@@ -493,6 +556,7 @@ class Docker:
             project = None
         if isinstance(project, dict):
             project["Columns"] = look.columns
+            project.update({key[0].upper() + key[1:]: value for key, value in switches.items() if value is not None})
             newline = "\r\n" if "\r\n" in text else "\n"
             files[self.manifest] = _encoded(json.dumps(project, ensure_ascii=True, indent=2).replace("\n", newline),
                                             project_bom)
@@ -504,6 +568,16 @@ class Docker:
             raise DockerError(f"Не удалось записать {exc.filename or self.folder}: Windows не разрешает менять "
                               "файлы в этой папке.") from exc
         log.info("corel docker: buttons of %s: %s", self.folder, look)
+
+    def state(self) -> tuple:
+        """What the user sets up: the buttons, their size and the heavy parts (to compare copies)."""
+        return tuple(self.load()), self.look(), tuple(sorted(self.options().items()))
+
+    def adopt(self, other: Docker) -> None:
+        """Make this copy the same as ``other`` (another CorelDRAW's copy of the same docker)."""
+        self.save(other.load())
+        options = other.options()
+        self.save_look(other.look(), options["audit"], options["live"])
 
     def can_undo(self) -> bool:
         return bool(self._kept())
@@ -797,7 +871,7 @@ def prepare_install(files: dict[str, bytes], caption: str, folder: str, guids: d
     for item in config["presets"]:
         if isinstance(item, dict) and item.get("actionType", PAGE_SETUP) == PAGE_SETUP:
             item["generatedMacroName"] = ""
-    page = blue_guideline(page[:begin] + script_json(config) + page[end:])
+    page = improved(page[:begin] + script_json(config) + page[end:])
     shown = html_text.escape(caption, quote=False)
     page = re.sub(r"(<title>)[^<]*(</title>)", lambda m: m.group(1) + shown + m.group(2), page, count=1)
     page = re.sub(r'(<div class="panel-title">\s*)[^<\s][^<]*?(\s*<)', lambda m: m.group(1) + shown + m.group(2),
@@ -959,3 +1033,31 @@ def with_look(html: str, look: Look) -> str:
     head = re.search(r"</head\s*>", html, re.IGNORECASE)
     at = head.start() if head else (re.search(r"<body\b", html, re.IGNORECASE) or re.search(r"$", html)).start()
     return html[:at] + block + html[at:]
+
+
+def copies_of(folder, roots: list[str] | None = None) -> list[Path]:
+    """The other CorelDRAWs' copies of a docker Switcher installed into several at once (the same GUIDs)."""
+    folder = Path(folder)
+    mine = _installed_mark(folder).get("guids")
+    docker = mine.get("docker") if isinstance(mine, dict) else None
+    if not docker:
+        return []
+    found = []
+    for target in corel_targets(roots):
+        for mark in sorted(target.addons.glob(f"*/{INSTALLED}")):
+            other = mark.parent
+            guids = _installed_mark(other).get("guids")
+            if os.path.normcase(str(other)) != os.path.normcase(str(folder)) and isinstance(guids, dict) \
+                    and guids.get("docker") == docker and _page_of(other) is not None:
+                found.append(other)
+    return found
+
+
+def corel_of(folder) -> str:
+    """Which CorelDRAW a docker's folder belongs to: «CorelDRAW 27» (from …\\Corel\\<suite>\\Programs64\\Addons\\x)."""
+    parts = Path(folder).parts
+    try:
+        suite = parts[parts.index("Corel") + 1:-3]
+    except ValueError:
+        return Path(folder).name
+    return ("CorelDRAW " + " ".join(suite).replace("CorelDRAW Graphics Suite", "").strip()).strip()

@@ -157,7 +157,14 @@ CorelDRAW (`corel_targets`: …\Programs64\CorelDRW.exe) as a docker of its own 
 mark removed (with it the docker shows empty), `switcher-install.json` so a reinstall updates in
 place; `win_access.make_writable` creates the folders in Program Files with one UAC question.
 «Вид кнопок…» (`Look`: buttons in a row, height, caption size) adds one `<style id="switcher-look">`
-before `</head>` that overrides the page's `.preset` rule. CorelDRAW is not on
+before `</head>` that overrides the page's `.preset` rule; its switches turn off the page's document check
+(`showDocumentAudit`) and refreshing it on every CorelDRAW event (`enableLiveUpdates`) — in CorelDRAW 27
+on the user's other PC the docker hung Corel for 1–2 minutes on opening/closing and on edits, while their
+myScripts docker (only `GMSManager.RunMacro` from the page) did not. Every write also patches the page
+(`improved`): `getApplication`/`getCorelMajor` remember their answer (the page asked twice per button).
+A docker installed into several CorelDRAWs (same GUIDs in `switcher-install.json`) is one docker: the page
+writes every change into all copies (`copies_of`), and copies that differ are made the same as the one
+changed last when the page opens (0.8.2 changed only the first, CorelDRAW 26, while the user worked in 27). CorelDRAW is not on
 CI: check a changed page by opening it in Chromium with a fake `window.external` (Playwright) and
 clicking buttons; never commit the user's own docker files (tests use `conftest.make_docker`).
 

@@ -995,8 +995,10 @@ class SettingsWindow(ctk.CTkToplevel):
         from . import coreldocker
 
         self.docker, self.docker_presets, self.docker_writable, error = docker, [], False, ""
+        self.docker_copies = []
         if docker is not None:
             try:
+                self.docker_copies = self._docker_copies(docker)
                 self.docker_presets = docker.load()
                 self.docker_writable = docker.writable()
             except coreldocker.DockerError as exc:
@@ -1013,7 +1015,10 @@ class SettingsWindow(ctk.CTkToplevel):
             self.docker_title.configure(text="Ищу докер…" if looking else "Докер не найден")
             self.docker_path.configure(text="")
         else:
-            self.docker_title.configure(text=f"{docker.name} — кнопок: {len(self.docker_presets)}")
+            corels = " и ".join(coreldocker.corel_of(d.folder).replace("CorelDRAW ", "")
+                                for d in (docker, *self.docker_copies))
+            where = f" · в CorelDRAW {corels}" if self.docker_copies else ""
+            self.docker_title.configure(text=f"{docker.name} — кнопок: {len(self.docker_presets)}{where}")
             self.docker_path.configure(text=str(docker.folder))
         ready = docker is not None and not error
         if ready and not self.docker_writable:
@@ -1029,6 +1034,28 @@ class SettingsWindow(ctk.CTkToplevel):
         self.docker_hint.configure(text=error or note or (
             "" if looking else self.DOCKER_NOT_FOUND if docker is None else
             self.DOCKER_READY if self.docker_writable else self.DOCKER_CLOSED))
+
+    def _docker_copies(self, docker) -> list:
+        """The same docker in the other CorelDRAWs it was installed into; copies that differ are made the
+        same as the one changed last (0.8.2 changed only the first copy: CorelDRAW 27 never saw it)."""
+        from . import coreldocker
+
+        copies = []
+        for folder in coreldocker.copies_of(docker.folder):
+            try:
+                copies.append(coreldocker.Docker(folder))
+            except coreldocker.DockerError:
+                continue
+        if not copies:
+            return []
+        every = [docker, *copies]
+        newest = max(every, key=lambda d: d.page.stat().st_mtime)
+        wanted = newest.state()
+        for other in every:
+            if other is not newest and other.state() != wanted and other.writable():
+                other.adopt(newest)
+                log.info("corel docker: %s made the same as %s", other.folder, newest.folder)
+        return copies
 
     def _docker_swatch(self, color: str) -> tk.PhotoImage:
         """A small square of the button's colour for the list."""
@@ -1170,9 +1197,9 @@ class SettingsWindow(ctk.CTkToplevel):
             self.docker_hint.configure(text=error)
             messagebox.showerror("Switcher", error, parent=self)
             return
-        self._remember_docker(str(folders[0]))
+        self._remember_docker(str(folders[-1]))  # the newest CorelDRAW; the others' copies follow it
         try:
-            self._show_docker(coreldocker.Docker(folders[0]))
+            self._show_docker(coreldocker.Docker(folders[-1]))
         except coreldocker.DockerError as exc:
             self.docker_hint.configure(text=str(exc))
         where = "\n".join(f"{target.label}: {folder}" for target, folder in zip(targets, folders, strict=True))
@@ -1194,6 +1221,8 @@ class SettingsWindow(ctk.CTkToplevel):
             return "Докер не найден."
         try:
             self.docker.save(presets)
+            for copy_ in self.docker_copies:  # the same docker in the other CorelDRAWs
+                copy_.save(presets)
         except coreldocker.DockerError as exc:
             self._show_docker(self.docker, select=select)
             return str(exc)
@@ -1289,26 +1318,30 @@ class SettingsWindow(ctk.CTkToplevel):
         if self.docker is None or not self.docker_writable:
             return
         try:
-            look = self.docker.look()
+            look, options = self.docker.look(), self.docker.options()
         except coreldocker.DockerError as exc:
             messagebox.showerror("Switcher", str(exc), parent=self)
             return
-        LookDialog(self, self.put_docker_look, look, self.docker_presets)
+        LookDialog(self, self.put_docker_look, look, self.docker_presets, audit=options["audit"], live=options["live"])
 
-    def put_docker_look(self, look) -> str | None:
-        """Write the buttons' size into the docker; an error to show in the dialog, or None."""
+    def put_docker_look(self, look, audit: bool | None = None, live: bool | None = None) -> str | None:
+        """Write the buttons' size (and the heavy parts on or off) into the docker and its copies; an error
+        to show in the dialog, or None."""
         from . import coreldocker
 
         if self.docker is None:
             return "Докер не найден."
         try:
-            self.docker.save_look(look)
+            for docker in (self.docker, *self.docker_copies):
+                docker.save_look(look, audit, live)
         except coreldocker.DockerError as exc:
             return str(exc)
         selected = self.docker_tree.selection()
+        heavy = "" if audit is None else (" Проверка документа " + ("включена" if audit else "выключена") + ".")
         self._show_docker(self.docker, select=selected[0] if selected else None,
                           note=f"Вид кнопок записан в докер: в ряду {look.columns}, высота {look.height}, надпись "
-                               f"{look.font}. В CorelDRAW он появится, когда панель докера закрыть и открыть снова.")
+                               f"{look.font}.{heavy} В CorelDRAW он появится, когда панель докера закрыть и открыть "
+                               "снова.")
         return None
 
     def undo_docker(self) -> None:
@@ -1318,6 +1351,9 @@ class SettingsWindow(ctk.CTkToplevel):
             return
         try:
             self.docker.undo()
+            for copy_ in self.docker_copies:
+                if copy_.can_undo():
+                    copy_.undo()
         except coreldocker.DockerError as exc:
             messagebox.showerror("Switcher", str(exc), parent=self)
         self._show_docker(self.docker)

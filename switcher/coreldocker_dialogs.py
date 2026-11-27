@@ -25,6 +25,8 @@ from .savebar import darker, normal_color
 
 ADD_TITLE, EXACT_TITLE = "Прибавить к текущей", "Задать ровно"
 SWATCHES = 16  # how many colours fit in the row
+HEAVY_NOTE = ("Если CorelDRAW подвисает, когда открываете или закрываете докер или правите документ, выключите "
+              "оба пункта: кнопки размеров работают и без них.")
 WHAT_IT_DOES = ("По нажатию кнопка ставит эту ширину всем страницам документа, меняет их высоту, убирает старые "
                 "направляющие и ставит новую горизонтальную.")
 OTHER_KIND = "У этой кнопки другое действие: здесь меняются только её группа, цвет и надписи."
@@ -289,11 +291,12 @@ class LookDialog(ctk.CTkToplevel):
 
     SAMPLE_WIDTH = 300  # px: about as wide as the docker usually is
 
-    def __init__(self, master, on_done: Callable[[Look], str | None], look: Look, samples: list[Preset]):
+    def __init__(self, master, on_done: Callable[..., str | None], look: Look, samples: list[Preset],
+                 audit: bool | None = None, live: bool | None = None):
         super().__init__(master)
         _set_icon(self)
         self.title("Вид кнопок докера — Switcher")
-        self.geometry("560x600")
+        self.geometry("560x" + ("700" if audit is not None else "600"))
         self.resizable(False, False)
         self.on_done = on_done
         self.samples = samples[:8] or [Preset("510×+32", subtitle="→26mm")]
@@ -316,6 +319,16 @@ class LookDialog(ctk.CTkToplevel):
                           command=lambda _v, k=key, u=unit: self._changed(k, u)).pack(
                 side="left", fill="x", expand=True, padx=(8, 8))
             self._changed(key, unit, draw=False)
+        self.audit = tk.BooleanVar(value=bool(audit))
+        self.live = tk.BooleanVar(value=bool(live))
+        self.switches = audit is not None
+        if self.switches:  # the heavy parts of the page: CorelDRAW 27 hung for minutes on them
+            ctk.CTkCheckBox(self, text="Проверка документа (PANTONE, шрифты, RGB, OLE, эффекты)",
+                            variable=self.audit, font=body).pack(fill="x", padx=18, pady=(18, 0))
+            ctk.CTkCheckBox(self, text="Обновлять проверку при каждом изменении в документе", variable=self.live,
+                            font=body).pack(fill="x", padx=18, pady=(8, 0))
+            ctk.CTkLabel(self, text=HEAVY_NOTE, font=small, text_color=MUTED, anchor="w", justify="left",
+                         wraplength=520).pack(fill="x", padx=18, pady=(4, 0))
         ctk.CTkLabel(self, text="Так кнопки будут выглядеть в докере (шириной около 300 точек):", font=small,
                      text_color=MUTED, anchor="w").pack(fill="x", padx=18, pady=(16, 4))
         self.sample = tk.Canvas(self, width=self.SAMPLE_WIDTH, height=200, highlightthickness=0, bg="#FFFFFF")
@@ -384,7 +397,8 @@ class LookDialog(ctk.CTkToplevel):
 
     def done(self) -> None:
         look = self.look()
-        error = look.problem() or self.on_done(look)
+        error = look.problem() or (self.on_done(look, self.audit.get(), self.live.get()) if self.switches
+                                   else self.on_done(look))
         if error:
             self.status.configure(text=error)
             return

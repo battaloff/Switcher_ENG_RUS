@@ -79,12 +79,14 @@ def test_saving_without_changes_keeps_the_docker_as_it_is(docker):
     assert all(before[p["id"]] == p for p in config["presets"])  # every key and value, the macros' names too
     assert {k: v for k, v in config.items() if k != "presets"} == {
         "name": "POLITEXT", "macroProjectName": "Politext", "generateVbaMacros": True, "minimumCorelVersion": 25,
-        "columns": 4}
-    # outside the list of buttons only one line is added: the guideline's colour (the macros make it blue)
+        "columns": 4, "showDocumentInfo": True, "enableLiveUpdates": True, "showDocumentAudit": True}
+    # outside the list of buttons only Switcher's fixes: the guideline's colour (the macros make it blue)
+    # and the version of CorelDRAW asked once
     old_begin, old_end = find_config(before_page)[1:]
     assert after_page[:begin] == before_page[:old_begin]
-    assert after_page[end:].replace("          " + coreldocker._BLUE + "\n", "") == before_page[old_end:]
-    assert after_page.count("RGBAssign(0, 0, 255)") == 1
+    assert after_page[end:] == coreldocker.improved(before_page)[old_end:]
+    assert after_page[end:].replace("          " + coreldocker._BLUE + "\n", "") != before_page[old_end:]
+    assert after_page.count("RGBAssign(0, 0, 255)") == 1 and after_page.count("corelMajorKnown = null") == 1
     project = json.loads(docker.manifest.read_text(encoding="utf-8"))
     assert {k: v for k, v in project.items() if k != "Presets"} == {
         k: v for k, v in before_project.items() if k != "Presets"}
@@ -586,3 +588,64 @@ def test_an_installed_docker_keeps_the_size_of_its_buttons(tmp_path, docker):
     targets = install_targets(tmp_path / "other", "27")
     (folder,) = coreldocker.install_docker(coreldocker.read_package(docker.folder), "POLITEXT", targets)
     assert Docker(folder, backups=tmp_path / "copies").look() == Look(3, 56, 13)
+
+
+# -- one docker in several CorelDRAWs; the heavy parts of the page ---------------------------------
+
+def test_the_page_asks_corel_its_version_once(docker):
+    """Every call from the page into CorelDRAW 27 is slow: the version was asked for each of 39 buttons."""
+    docker.save(docker.load())
+    page = docker.page.read_text(encoding="utf-8")
+    assert page.count("var corelMajorKnown = null;") == 1
+    assert "if (corelMajorKnown !== null) return corelMajorKnown;" in page
+    assert "corelMajorKnown = match ? parseInt(match[0], 10) : 0;" in page and "return corelMajorKnown;" in page
+    docker.save(docker.load())
+    assert docker.page.read_text(encoding="utf-8").count("corelMajorKnown = null") == 1  # patched once
+    assert coreldocker.version_asked_once("<script>function other() {}</script>") == (
+        "<script>function other() {}</script>")  # a page written another way is left as it is
+    # and CorelDRAW's Application is asked for once, not twice per button
+    page = docker.page.read_text(encoding="utf-8")
+    assert page.count("var corelAppKnown = null;") == 1 and "if (corelAppKnown) return corelAppKnown;" in page
+    assert ("corelAppKnown = window.external && window.external.Application ? window.external.Application : null;"
+            in page)
+    assert coreldocker.application_kept(page) == page
+
+
+def test_the_document_check_can_be_switched_off(docker):
+    from switcher.coreldocker import Look
+
+    assert docker.options() == {"audit": True, "live": True}
+    docker.save_look(Look(), audit=False, live=False)
+    assert docker.options() == {"audit": False, "live": False}
+    config = find_config(docker.page.read_text(encoding="utf-8"))[0]
+    assert (config["showDocumentAudit"], config["enableLiveUpdates"], config["showDocumentInfo"]) == (False, False, True)
+    project = json.loads(docker.manifest.read_text(encoding="utf-8"))
+    assert (project["ShowDocumentAudit"], project["EnableLiveUpdates"]) == (False, False)
+    docker.save_look(Look(3, 50, 12))  # the switches left as they are
+    assert docker.options() == {"audit": False, "live": False} and docker.look() == Look(3, 50, 12)
+
+
+def test_copies_in_several_corels_are_found_and_made_the_same(tmp_path, docker_folder):
+    """The user's other computer: installed into CorelDRAW 26 and 27, changes went into 26 only."""
+    import os
+    import time
+
+    from switcher.coreldocker import Look
+
+    other_pc = tmp_path / "other"
+    targets = install_targets(other_pc, "26", "27")
+    folders = coreldocker.install_docker(coreldocker.read_package(docker_folder), "POLITEXT-2", targets)
+    in_26, in_27 = (Docker(f, backups=tmp_path / "copies") for f in folders)
+    roots = [str(other_pc / "Corel")]
+    assert coreldocker.copies_of(in_26.folder, roots) == [in_27.folder]
+    assert coreldocker.copies_of(in_27.folder, roots) == [in_26.folder]
+    assert coreldocker.corel_of(in_27.folder) == "CorelDRAW 27"
+    assert coreldocker.copies_of(docker_folder, roots) == []  # not installed by Switcher: no copies
+    in_26.save_look(Look(4, 24, 7))
+    in_26.save(in_26.load()[:-1])
+    later = time.time() + 5
+    os.utime(in_26.page, (later, later))
+    assert in_26.state() != in_27.state()
+    in_27.adopt(in_26)
+    assert in_27.state() == in_26.state() and in_27.look() == Look(4, 24, 7) and len(in_27.load()) == 3
+    assert in_27.undo() and in_27.undo() and len(in_27.load()) == 4  # adopting can be undone too
