@@ -681,9 +681,10 @@ const html = fs.readFileSync(process.argv[2], 'utf8');
 const scripts = [...html.matchAll(/<script type="text\/javascript">([\s\S]*?)<\/script>/g)].map(m => m[1]);
 const nodes = {};
 const statuses = [];
-global.document = { getElementById(id) {
+const parentNode = { insertBefore(node) { nodes[node.id] = node; } };
+global.document = { createElement() { return { style: {}, innerHTML: '', className: '' }; }, getElementById(id) {
   if (!nodes[id]) {
-    const node = { id, style: {}, innerHTML: '', className: '' };
+    const node = { id, style: {}, innerHTML: '', className: '', parentNode };
     let content = '';
     Object.defineProperty(node, 'textContent', { get: () => content,
       set: (value) => { content = value; if (id === 'auditStatus') statuses.push(value); } });
@@ -692,7 +693,8 @@ global.document = { getElementById(id) {
   return nodes[id];
 } };
 const collection = (items) => ({ Count: items.length, Item(i) { return items[i - 1]; }, All() { return collection(items); } });
-const slow = () => { const until = performance.now() + 0.2; while (performance.now() < until) {} };
+let walked = 0;
+const slow = () => { walked++; const until = performance.now() + 0.2; while (performance.now() < until) {} };
 let id = 0;
 const shape = (type, extra) => Object.assign({ get Type() { slow(); return type; }, StaticID: ++id,
   Fill: { Type: 1, UniformColor: { Type: 2 } }, Outline: { Type: 0 }, Transparency: { Type: 0 } }, extra || {});
@@ -711,6 +713,15 @@ for (let i = 0; i < 400; i++) {
 const pages = [{ Shapes: collection(shapes) }, { Shapes: collection(shapes.slice(0, 10)) }];
 const app = { Documents: { Count: 1 }, ActiveDocument: { Pages: collection(pages) },
   FontList: collection(['Arial', 'Times New Roman']) };
+if (process.argv[3] === 'macro') {  // the old docker «myScripts» and its VBA macro
+  app.InitializeVBA = () => {};
+  app.GMSManager = { Projects: collection([{ Name: 'GlobalMacros' }, { Name: 'myScripts' }]),
+    RunMacro(project, macro) {
+      if (project !== 'myScripts' || macro !== 'Macros.getDocumentInfo') throw new Error('no such macro');
+      return 'Page size: 745,00 x 400,00 mm (all)\r\nPages: 1 of 2\r\n\r\nSpot colors: PANTONE 186 C\r\n' +
+        'OLE objects: Found\r\n\r\nWORK';
+    } };
+}
 global.window = { external: { Application: app, RegisterEventListener() {} } };
 for (const script of scripts) (0, eval)(script);  // as the page's own scripts: global
 window.onload();
@@ -722,14 +733,16 @@ const timer = setInterval(() => {
     const cards = [...(nodes.auditSummary ? nodes.auditSummary.innerHTML : '').matchAll(
       /audit-value">([^<]*)<\/div><div class="audit-label">([^<]*)/g)].map(m => m[2] + '=' + m[1]);
     const missing = /Нет в системе: (\d+)/.exec(nodes.auditSummary ? nodes.auditSummary.innerHTML : '');
-    console.log(JSON.stringify({ status, cards, missing: missing ? Number(missing[1]) : null, panel: nodes.auditPanel && nodes.auditPanel.style.display,
+    console.log(JSON.stringify({ status, cards, walked, macro: nodes.auditMacro ? nodes.auditMacro.innerHTML : null,
+      counter: nodes.auditCounter ? nodes.auditCounter.textContent : null,
+      missing: missing ? Number(missing[1]) : null, panel: nodes.auditPanel && nodes.auditPanel.style.display,
       slices: statuses.filter(s => s.startsWith('Проверка…')).length }));
   }
 }, 20);
 """
 
 
-def run_page(tmp_path, html: str) -> dict:
+def run_page(tmp_path, html: str, *how: str) -> dict:
     import shutil
     import subprocess
 
@@ -738,7 +751,7 @@ def run_page(tmp_path, html: str) -> dict:
         pytest.skip("no node to run the page's script")
     (tmp_path / "harness.js").write_text(NODE_HARNESS, encoding="utf-8")
     (tmp_path / "page.html").write_text(html, encoding="utf-8")
-    done = subprocess.run([node, str(tmp_path / "harness.js"), str(tmp_path / "page.html")], check=False,
+    done = subprocess.run([node, str(tmp_path / "harness.js"), str(tmp_path / "page.html"), *how], check=False,
                           capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout.strip().splitlines()[-1])
@@ -769,6 +782,30 @@ def test_the_lighter_check_finds_what_the_page_found(docker_folder, tmp_path):
     later = run_page(tmp_path, with_config(lighter, auditOnOpen=False))
     assert later["status"] == "Проверка — по кнопке «Проверить сейчас»." and later["cards"] == []
     assert later["panel"] == "block"  # so the button can be pressed
+
+
+def test_pantone_and_ole_come_from_the_old_dockers_macro(docker_folder, tmp_path):
+    """The user's old docker «myScripts» did not hang CorelDRAW 27: its page makes one call, a VBA macro
+    (Macros.getDocumentInfo) that walks the document inside CorelDRAW. Where it is, the docker asks it too."""
+    html = coreldocker.lighter_check((docker_folder / "Politext.html").read_text(encoding="utf-8"))
+    only = with_config(html, auditChecks={"spot": True, "rgb": False, "fonts": False, "ole": True, "effects": False})
+    fast = run_page(tmp_path, only, "macro")
+    assert fast["status"] == "Проверено макросом старого докера myScripts." and fast["walked"] == 0  # no walk
+    assert "PANTONE / Spot:</strong> PANTONE 186 C" in fast["macro"] and "Есть OLE-объекты" in fast["macro"]
+    assert fast["cards"] == [] and fast["counter"] == "2 замечания"
+    both = run_page(tmp_path, html, "macro")  # RGB, fonts and effects ticked too: the page checks those itself
+    assert both["cards"] == ["Шрифты=2", "RGB-объекты=52", "Эффекты=102"] and both["walked"] > 0
+    assert "PANTONE 186 C" in both["macro"] and both["status"] == "Проверено: 512 объектов."
+    alone = run_page(tmp_path, only)  # no old docker on this computer: the page checks everything itself
+    assert alone["cards"] == ["PANTONE / Spot=1", "OLE-объекты=102"] and alone["macro"] == ""
+
+
+def test_a_page_of_084_gets_the_macro_too(docker_folder):
+    html = (docker_folder / "Politext.html").read_text(encoding="utf-8")
+    of_084 = coreldocker._patched(html, coreldocker._checks_patches(), "the checks")
+    assert coreldocker._MACRO_HELPER not in of_084 and coreldocker._CHECK_HELPER in of_084
+    assert coreldocker.lighter_check(of_084) == coreldocker.lighter_check(html)
+    assert coreldocker._MACRO_HELPER in coreldocker.lighter_check(html)
 
 
 def test_copies_in_several_corels_are_found_and_made_the_same(tmp_path, docker_folder):

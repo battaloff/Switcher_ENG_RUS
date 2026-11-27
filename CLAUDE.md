@@ -166,8 +166,14 @@ write also patches the page (`improved`): `getApplication`/`getCorelMajor` remem
 asked twice per button), and `lighter_check` — all or nothing, else the page is left and the dialog shows no
 per-check switches — makes the check skip what is switched off and run a slice at a time (`auditInSteps`:
 40 ms of work, then `setTimeout`, so Corel gets its window back; the page's own `refreshAudit` stays as
-`refreshAuditAtOnce` for the preview and "no document"). `test_the_lighter_check_finds_what_the_page_found`
-runs the cut-down check of `conftest.DOCKER_AUDIT` in node before and after the patch.
+`refreshAuditAtOnce` for the preview and "no document"). A second step (0.8.5, on top of the first, so
+pages patched by 0.8.4 get it too) takes PANTONE/Spot and OLE from the user's old docker «myScripts»: its
+page makes one call, `GMSManager.RunMacro("myScripts", "Macros.getDocumentInfo")` (VBA inside Corel, fast;
+returns "Spot colors: … / OLE objects: Found|Not found"), and that is why it never hung; the page asks it
+when that project is loaded and walks the objects itself only for RGB/fonts/effects. The macro's source is
+in the user's `TemplateWebDocker.gms` (olevba reads it once the bytes before the OLE header are cut off).
+`test_the_lighter_check_finds_what_the_page_found` and `test_pantone_and_ole_come_from_the_old_dockers_macro`
+run the cut-down check of `conftest.DOCKER_AUDIT` in node before and after the patch.
 A docker installed into several CorelDRAWs (same GUIDs in `switcher-install.json`) is one docker: the page
 writes every change into all copies (`copies_of`), and copies that differ are made the same as the one
 changed last when the page opens (0.8.2 changed only the first, CorelDRAW 26, while the user worked in 27). CorelDRAW is not on

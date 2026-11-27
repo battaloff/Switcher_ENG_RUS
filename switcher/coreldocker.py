@@ -1325,27 +1325,181 @@ def _checks_patches() -> list[tuple[re.Pattern, object]]:
     ]
 
 
-def lighter_check(html: str) -> str:
-    """The page's document check made lighter: the checks switched off in ``config.auditChecks`` are
-    skipped, ``config.auditOnOpen`` false — no check when the docker opens, and the check runs a slice
-    at a time.  Every change or none: a page written another way is left as it is."""
-    if _CHECK_HELPER in html:
-        return html
-    missing = [name for name in _CHECK_NEEDS if f"function {name}(" not in html]
-    if missing or "installedFontMap" not in html or "auditInProgress" not in html:
-        if "function scanDocument(" in html:
-            log.info("corel docker: the page's check lacks %s: its checks stay as they are", missing)
-        return html
+# PANTONE and OLE, the way the user's old docker «myScripts» checks them: one call of its VBA macro
+# (Macros.getDocumentInfo), which walks the document inside CorelDRAW, fast where the page's own walk asks
+# CorelDRAW about every object from outside.  The page uses it when that macro is there, and checks the
+# rest (RGB, fonts, effects) itself, if they are ticked.
+_MACRO_HELPER = "function auditMacro("
+_MACRO_NEEDS = ("text", "escapeHtml", "getApplication", "requireDocument", "setAuditStatus", "refreshAuditAtOnce")
+_BY_MACRO = """var auditByMacro = {};
+var auditMacroFailed = false;
+var vbaStarted = false;
+
+function auditTicked(name) {
+  var checks = config.auditChecks;
+  return !checks || checks[name] !== false;
+}
+
+function auditOn(name) {
+  return auditTicked(name) && !(auditByMacro && auditByMacro[name]);
+}
+
+function auditMacro(app) {
+  if (auditMacroFailed) return null;
+  var answer = '';
+  try {
+    if (!vbaStarted) {
+      vbaStarted = true;
+      try { app.InitializeVBA(); } catch (vbaError) {}
+    }
+    var projects = app.GMSManager.Projects;
+    var found = false;
+    for (var i = 1; i <= projects.Count && !found; i++) {
+      var project = projects.Item(i);
+      var name = '';
+      try { name = String(project.Name || ''); } catch (nameError) {}
+      if (name.toLowerCase() !== 'myscripts') {
+        try { name = String(project.DisplayName || ''); } catch (displayError) {}
+      }
+      found = name.toLowerCase() === 'myscripts';
+    }
+    if (!found) {
+      auditMacroFailed = true;
+      return null;
+    }
+    answer = String(app.GMSManager.RunMacro('myScripts', 'Macros.getDocumentInfo') || '');
+  } catch (e) {
+    auditMacroFailed = true;
+    return null;
+  }
+  var spots = null;
+  var ole = null;
+  var lines = answer.split(/\\r?\\n/);
+  for (var j = 0; j < lines.length; j++) {
+    var line = lines[j];
+    var value = line.substring(line.indexOf(':') + 1).replace(/^\\s+|\\s+$/g, '');
+    if (line.indexOf('Spot colors:') === 0) {
+      spots = value && value !== 'Not found' ? value.split(', ') : [];
+    } else if (line.indexOf('OLE objects:') === 0) {
+      ole = value === 'Found';
+    }
+  }
+  if (spots === null || ole === null) {
+    auditMacroFailed = true;
+    return null;
+  }
+  return { spots: spots, ole: ole };
+}
+
+function showAuditMacro(answer) {
+  var box = document.getElementById('auditMacro');
+  if (!box) {
+    var summary = document.getElementById('auditSummary');
+    box = document.createElement('div');
+    box.id = 'auditMacro';
+    box.className = 'audit-section';
+    summary.parentNode.insertBefore(box, summary);
+  }
+  if (!answer) {
+    box.innerHTML = '';
+    box.style.display = 'none';
+    return 0;
+  }
+  var html = '';
+  var warnings = 0;
+  if (auditTicked('spot')) {
+    if (answer.spots.length) {
+      warnings++;
+      html += '<div class="audit-item" style="color:#dc2626;"><strong>⚠ PANTONE / Spot:</strong> ' +
+        escapeHtml(answer.spots.join(', ')) + '</div>';
+    } else {
+      html += '<div class="audit-item">PANTONE / Spot: не найдены</div>';
+    }
+  }
+  if (auditTicked('ole')) {
+    if (answer.ole) {
+      warnings++;
+      html += '<div class="audit-item" style="color:#dc2626;"><strong>⚠ Есть OLE-объекты</strong></div>';
+    } else {
+      html += '<div class="audit-item">OLE-объекты: не найдены</div>';
+    }
+  }
+  box.innerHTML = html;
+  box.style.display = 'block';
+  return warnings;
+}
+
+function refreshAudit(deepText) {
+  auditByMacro = {};
+  var panel = document.getElementById('auditPanel');
+  panel.style.display = config.showDocumentAudit ? 'block' : 'none';
+  var app = config.showDocumentAudit ? getApplication() : null;
+  var doc = null;
+  if (app) {
+    try { doc = requireDocument(app); } catch (documentError) {}
+  }
+  var answer = doc && (auditTicked('spot') || auditTicked('ole')) ? auditMacro(app) : null;
+  var warnings = showAuditMacro(answer);
+  if (answer) auditByMacro = { spot: true, ole: true };
+  if (answer && !auditOn('rgb') && !auditOn('fonts') && !auditOn('effects')) {
+    auditRun++;
+    auditInProgress = false;
+    document.getElementById('auditSummary').innerHTML = '';
+    document.getElementById('auditDetails').innerHTML = '';
+    text(document.getElementById('auditCounter'),
+      warnings ? warnings + (warnings === 1 ? ' замечание' : ' замечания') : 'OK');
+    text(document.getElementById('auditScope'), 'Все страницы');
+    setAuditStatus('Проверено макросом старого докера myScripts.', false);
+    return;
+  }
+  refreshAuditInSteps(deepText);
+}
+
+"""
+
+
+def _macro_patches() -> list[tuple[re.Pattern, object]]:
+    return [
+        # whether a check is ticked, and whether the page makes it itself (not when the macro did)
+        (re.compile(r"([ \t]*)function auditOn\(name\) \{\s*var checks = config\.auditChecks;\s*"
+                    r"return !checks \|\| checks\[name\] !== false;\s*\}\r?\n"),
+         lambda m: ""),
+        (re.compile(r"([ \t]*)function refreshAudit\(deepText\) \{(?=\s*var panel)"),
+         lambda m: _indented(_BY_MACRO, m.group(1)) + m.group(1) + "function refreshAuditInSteps(deepText) {"),
+    ]
+
+
+def _patched(html: str, patches: list, what: str) -> str | None:
+    """Every one of ``patches`` applied once, or None when the page is written another way."""
     patched = html
-    for pattern, replacement in _checks_patches():
+    for pattern, replacement in patches:
         patched, count = pattern.subn(replacement, patched, count=1)
         if count != 1:
-            log.info("corel docker: the page's check is written another way (%s): its checks stay as they are",
+            log.info("corel docker: the page's check is written another way (%s, %s): left as it is", what,
                      pattern.pattern[:40])
-            return html
+            return None
     if "\r\n" in html and not re.search(r"(?<!\r)\n", html):  # the page's own line ends for the lines added
         patched = re.sub(r"(?<!\r)\n", "\r\n", patched)
     return patched
+
+
+def lighter_check(html: str) -> str:
+    """The page's document check made lighter: the checks switched off in ``config.auditChecks`` are
+    skipped, ``config.auditOnOpen`` false — no check when the docker opens, the check runs a slice at a
+    time (0.8.4), and PANTONE and OLE come from the old docker's VBA macro when it is there (0.8.5).
+    Each step is made whole or not at all: a page written another way is left as it is."""
+    if _CHECK_HELPER not in html:
+        missing = [name for name in _CHECK_NEEDS if f"function {name}(" not in html]
+        if missing or "installedFontMap" not in html or "auditInProgress" not in html:
+            if "function scanDocument(" in html:
+                log.info("corel docker: the page's check lacks %s: its checks stay as they are", missing)
+            return html
+        html = _patched(html, _checks_patches(), "the checks") or html
+        if _CHECK_HELPER not in html:
+            return html
+    if _MACRO_HELPER not in html and all(f"function {name}(" in html for name in _MACRO_NEEDS):
+        html = _patched(html, _macro_patches(), "the macro") or html
+    return html
 
 
 def can_switch_checks(html: str) -> bool:

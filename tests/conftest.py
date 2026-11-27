@@ -349,6 +349,10 @@ DOCKER_PAGE = """<!DOCTYPE html>
       node.textContent = value;
     }
 
+    function escapeHtml(value) {
+      return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     function requireDocument(app) {
       if (!app || !app.Documents || app.Documents.Count < 1 || !app.ActiveDocument) {
         throw new Error('Сначала откройте документ CorelDRAW.');
