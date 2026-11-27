@@ -339,7 +339,7 @@ def application_kept(html: str) -> str:
 
 def improved(html: str) -> str:
     """What Switcher fixes in a page whenever it writes it."""
-    return application_kept(version_asked_once(blue_guideline(html)))
+    return lighter_check(application_kept(version_asked_once(blue_guideline(html))))
 
 
 class Docker:
@@ -523,19 +523,25 @@ class Docker:
         except (OSError, UnicodeDecodeError) as exc:
             raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
 
-    def options(self) -> dict[str, bool]:
-        """The page's heavy parts: the document check, and refreshing it on every change in CorelDRAW."""
+    def options(self) -> dict:
+        """The page's heavy parts: the document check (``audit``), refreshing it on every change in
+        CorelDRAW (``live``), checking when the docker opens (``on_open``), and which checks it makes
+        (``checks``: {"spot": True, …}; None — this page cannot switch them)."""
         try:
-            config = find_config(_read(self.page)[0])[0]
+            html = _read(self.page)[0]
         except (OSError, UnicodeDecodeError) as exc:
             raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
+        config = find_config(html)[0]
+        saved = config.get("auditChecks") if isinstance(config.get("auditChecks"), dict) else {}
+        checks = {key: saved.get(key) is not False for key, _label in CHECKS} if can_switch_checks(html) else None
         return {"audit": bool(config.get("showDocumentAudit", False)),
-                "live": bool(config.get("enableLiveUpdates", False))}
+                "live": bool(config.get("enableLiveUpdates", False)),
+                "on_open": config.get("auditOnOpen") is not False, "checks": checks}
 
-    def save_look(self, look: Look, audit: bool | None = None, live: bool | None = None) -> None:
-        """How big the docker draws its buttons, and whether it checks the document (``audit``) and
-        refreshes on every change (``live``): into the page and the project; the files as they were
-        are kept for ``undo``."""
+    def save_look(self, look: Look, options: dict | None = None) -> None:
+        """How big the docker draws its buttons, and its document check (``options`` as ``options()``
+        gives them; a part missing or None stays as it is).  Into the page and the project; the files as
+        they were are kept for ``undo``."""
         error = look.problem()
         if error:
             raise DockerError(error)
@@ -545,8 +551,14 @@ class Docker:
             raise DockerError(f"Не удалось прочитать файл панели {self.page.name}: {exc}") from exc
         config, begin, end = find_config(html)
         config["columns"] = look.columns
-        switches = {"showDocumentAudit": audit, "enableLiveUpdates": live}
-        config.update({key: value for key, value in switches.items() if value is not None})
+        options = options or {}
+        checks = options.get("checks")
+        switches = {"showDocumentAudit": options.get("audit"), "enableLiveUpdates": options.get("live"),
+                    "auditOnOpen": options.get("on_open"),
+                    "auditChecks": None if checks is None else {key: bool(checks.get(key, True))
+                                                                for key, _label in CHECKS}}
+        switches = {key: value for key, value in switches.items() if value is not None}
+        config.update(switches)
         page = improved(with_look(html[:begin] + script_json(config) + html[end:], look))
         files = {self.page: _encoded(page, bom)}
         try:
@@ -556,7 +568,9 @@ class Docker:
             project = None
         if isinstance(project, dict):
             project["Columns"] = look.columns
-            project.update({key[0].upper() + key[1:]: value for key, value in switches.items() if value is not None})
+            # Docker Studio's own settings; what only Switcher's version of the page knows stays in the page
+            project.update({key[0].upper() + key[1:]: value for key, value in switches.items()
+                            if key in ("showDocumentAudit", "enableLiveUpdates")})
             newline = "\r\n" if "\r\n" in text else "\n"
             files[self.manifest] = _encoded(json.dumps(project, ensure_ascii=True, indent=2).replace("\n", newline),
                                             project_bom)
@@ -571,13 +585,15 @@ class Docker:
 
     def state(self) -> tuple:
         """What the user sets up: the buttons, their size and the heavy parts (to compare copies)."""
-        return tuple(self.load()), self.look(), tuple(sorted(self.options().items()))
+        options = self.options()
+        checks = options.pop("checks")
+        return (tuple(self.load()), self.look(), tuple(sorted(options.items())),
+                None if checks is None else tuple(sorted(checks.items())))
 
     def adopt(self, other: Docker) -> None:
         """Make this copy the same as ``other`` (another CorelDRAW's copy of the same docker)."""
         self.save(other.load())
-        options = other.options()
-        self.save_look(other.look(), options["audit"], options["live"])
+        self.save_look(other.look(), other.options())
 
     def can_undo(self) -> bool:
         return bool(self._kept())
@@ -1061,3 +1077,276 @@ def corel_of(folder) -> str:
     except ValueError:
         return Path(folder).name
     return ("CorelDRAW " + " ".join(suite).replace("CorelDRAW Graphics Suite", "").strip()).strip()
+
+
+# -- the document check: lighter, check by check, and a slice at a time ---------------------------
+#
+# The page's check walks every object of the document and asks CorelDRAW 16-20 questions about each
+# (fill, outline, their colours, effects, transparency, text): ~100 000 calls for 5 700 objects, one
+# long loop on CorelDRAW's own thread — fast in CorelDRAW 26, minutes of a frozen CorelDRAW 27.
+# Switcher teaches the page to skip the checks switched off (``config.auditChecks``), not to check
+# when the docker opens (``config.auditOnOpen``), and to check a slice at a time (40 ms of work, then
+# CorelDRAW has its window back), showing how far it got.  All or nothing: a page written another way
+# is left as it is, and the settings do not offer the switches.
+
+CHECKS = (("spot", "PANTONE / Spot"), ("rgb", "RGB-объекты"), ("fonts", "Шрифты"), ("ole", "OLE-объекты"),
+          ("effects", "Эффекты"))
+_CHECK_HELPER = "function auditOn("
+# what the check in slices takes from the page
+_CHECK_NEEDS = ("getApplication", "requireDocument", "emptyAudit", "dictionaryValues", "collectionItem", "shapeId",
+                "inspectShapeEffects", "inspectTextShape", "inspectOle", "inspectFill", "inspectOutline",
+                "renderAudit", "setAuditStatus")
+
+_AUDIT_ON = """function auditOn(name) {
+  var checks = config.auditChecks;
+  return !checks || checks[name] !== false;
+}
+
+"""
+
+# Switcher: the page's walk over the objects (scanShapeCollection) as a list of work done 40 ms at a time
+_IN_SLICES = """var auditRun = 0;
+
+function refreshAudit(deepText) {
+  var panel = document.getElementById('auditPanel');
+  panel.style.display = config.showDocumentAudit ? 'block' : 'none';
+  if (!config.showDocumentAudit) return;
+  var app = getApplication();
+  var doc = null;
+  if (app) {
+    try { doc = requireDocument(app); } catch (documentError) {}
+  }
+  auditRun++;
+  auditInProgress = false;
+  if (!doc) {
+    refreshAuditAtOnce(deepText);
+    return;
+  }
+  auditInProgress = true;
+  setAuditStatus('Проверка документа…', false);
+  auditInSteps(app, doc, auditRun, function (error, audit) {
+    auditInProgress = false;
+    if (error) {
+      setAuditStatus('Проверка не закончена: ' +
+        String(error.message || error.description || error), true);
+    } else {
+      renderAudit(audit, false);
+    }
+  });
+}
+
+function auditInSteps(app, doc, run, finish) {
+  var audit = emptyAudit();
+  var seen = {};
+  var stack = [];
+  var nextPage = 1;
+  var colors = auditOn('spot') || auditOn('rgb');
+  var fontsLeft = auditOn('fonts') && !installedFontMap;
+  var fontList = null;
+  var fontCount = 0;
+  var fontIndex = 1;
+  var fontMap = {};
+  try { audit.pages = parseInt(doc.Pages.Count, 10) || 0; }
+  catch (pagesError) { finish(pagesError); return; }
+
+  function walk(shapes, pageIndex) {
+    var count = 0;
+    try { count = parseInt(shapes.Count, 10) || 0; } catch (countError) {}
+    if (count) stack.push({ shapes: shapes, count: count, next: 1, page: pageIndex });
+  }
+
+  function inspect(shape, pageIndex) {
+    var objectId = shapeId(shape, pageIndex, audit);
+    if (seen[objectId]) return;
+    seen[objectId] = true;
+    var typeNumber = -1;
+    try { typeNumber = parseInt(shape.Type, 10); } catch (typeError) {}
+    if (typeNumber !== 7) audit.objects++;
+    if (auditOn('effects')) inspectShapeEffects(shape, typeNumber, audit, objectId);
+    if (typeNumber === 6 && (colors || auditOn('fonts'))) inspectTextShape(shape, audit, objectId);
+    if (typeNumber === 12) {
+      if (auditOn('ole')) inspectOle(audit, pageIndex, objectId);
+      return;
+    }
+    var graphic = typeNumber >= 1 && typeNumber <= 6;
+    if (graphic && colors) {
+      try { inspectFill(shape.Fill, audit, objectId); } catch (fillError) {}
+      try { inspectOutline(shape.Outline, audit, objectId); } catch (outlineError) {}
+    }
+    if (graphic) {
+      try {
+        var powerClip = shape.PowerClip;
+        if (powerClip) walk(powerClip.Shapes.All(), pageIndex);
+      } catch (powerClipError) {}
+    }
+    if (typeNumber === 7 || typeNumber === 10 || typeNumber === 11 || typeNumber === 13 ||
+        typeNumber === 15 || typeNumber === 16 || typeNumber === 18 || typeNumber === 22) {
+      try { walk(shape.Shapes.All(), pageIndex); } catch (groupError) {}
+    }
+  }
+
+  function step() {
+    if (stack.length) {
+      var top = stack[stack.length - 1];
+      if (top.next > top.count) {
+        stack.pop();
+        return true;
+      }
+      var shape = null;
+      try { shape = collectionItem(top.shapes, top.next); } catch (itemError) {}
+      top.next++;
+      if (shape) inspect(shape, top.page);
+      return true;
+    }
+    if (nextPage <= audit.pages) {
+      try { walk(doc.Pages.Item(nextPage).Shapes.All(), nextPage); } catch (pageError) {}
+      nextPage++;
+      return true;
+    }
+    if (fontsLeft) {
+      if (!fontList) {
+        try {
+          fontList = app.FontList;
+          fontCount = parseInt(fontList.Count, 10) || 0;
+        } catch (fontListError) {
+          fontsLeft = false;
+          return true;
+        }
+      }
+      if (fontIndex <= fontCount) {
+        try {
+          var name = String(collectionItem(fontList, fontIndex) || '');
+          if (name) fontMap[name.toLowerCase()] = true;
+        } catch (fontError) {}
+        fontIndex++;
+        return true;
+      }
+      installedFontMap = fontMap;
+      fontsLeft = false;
+      return true;
+    }
+    return false;
+  }
+
+  function markMissingFonts() {
+    var known = auditOn('fonts') ? (installedFontMap || fontMap) : {};
+    var any = false;
+    for (var key in known) {
+      if (known.hasOwnProperty(key)) { any = true; break; }
+    }
+    var used = dictionaryValues(audit.fonts);
+    for (var i = 0; i < used.length; i++) {
+      used[i].missing = any && !known[used[i].name.toLowerCase()];
+    }
+  }
+
+  function slice() {
+    if (run !== auditRun) return;
+    var until = new Date().getTime() + 40;
+    var over = false;
+    var failure = null;
+    try {
+      while (new Date().getTime() < until) {
+        if (!step()) { over = true; break; }
+      }
+    } catch (e) { failure = e; }
+    if (failure) { finish(failure); return; }
+    if (over) {
+      markMissingFonts();
+      finish(null, audit);
+      return;
+    }
+    setAuditStatus('Проверка… объектов: ' + audit.objects +
+      (audit.pages > 1 ? ', страница ' + Math.max(1, Math.min(nextPage - 1, audit.pages)) +
+        ' из ' + audit.pages : ''), false);
+    setTimeout(slice, 30);
+  }
+
+  setTimeout(slice, 0);
+}
+
+"""
+
+
+def _indented(code: str, indent: str) -> str:
+    return "".join(indent + line if line.strip() else line for line in code.splitlines(keepends=True))
+
+
+def _checks_patches() -> list[tuple[re.Pattern, object]]:
+    def card(label: str, key: str):
+        return (re.compile(r"(summary \+= auditCard\(\s*'" + re.escape(label) + "')"),
+                lambda m, key=key: f"if (auditOn('{key}')) {m.group(1)}")
+
+    colors = "(auditOn('spot') || auditOn('rgb'))"
+    return [
+        # the helper, before the first function of the check
+        (re.compile(r"([ \t]*)(function emptyAudit\(\) \{)"),
+         lambda m: _indented(_AUDIT_ON, m.group(1)) + m.group(1) + m.group(2)),
+        # colours: spot and RGB
+        (re.compile(r"if \(typeNumber === 5\) \{(\s*audit\.rgbObjectIds)"),
+         lambda m: f"if (typeNumber === 5 && auditOn('rgb')) {{{m.group(1)}"),
+        (re.compile(r"(typeNumber !== 26)\) return;"),
+         lambda m: f"{m.group(1)} || !auditOn('spot')) return;"),
+        (re.compile(r"if \(safeGraphicShape\) \{(\s*try \{\s*inspectFill\(shape\.Fill)"),
+         lambda m: f"if (safeGraphicShape && {colors}) {{{m.group(1)}"),
+        (re.compile(r"(\s)(inspectFill\(story\.Fill, audit, objectId\);)"),
+         lambda m: f"{m.group(1)}if {colors} {m.group(2)}"),
+        (re.compile(r"(\s)(inspectOutline\(story\.Outline, audit, objectId\);)"),
+         lambda m: f"{m.group(1)}if {colors} {m.group(2)}"),
+        # fonts: the text's font and the list of the fonts installed
+        (re.compile(r"try \{ font = String\(story\.Font \|\| ''\); \} catch \(fontError\) \{\}(\s*)"
+                    r"addFont\(audit, font, objectId\);"),
+         lambda m: (f"if (auditOn('fonts')) {{ try {{ font = String(story.Font || ''); }} catch (fontError) {{}}"
+                    f"{m.group(1)}  addFont(audit, font, objectId); }}")),
+        (re.compile(r"var fontMap = installedFonts\(app\);"),
+         lambda m: "var fontMap = auditOn('fonts') ? installedFonts(app) : {};"),
+        (re.compile(r"if \(typeNumber === 6\) \{(\s*inspectTextShape\()"),
+         lambda m: f"if (typeNumber === 6 && (auditOn('fonts') || {colors})) {{{m.group(1)}"),
+        # OLE and effects
+        (re.compile(r"(if \(typeNumber === 12\) \{\s*)(inspectOle\(audit, pageIndex, objectId\);)"),
+         lambda m: f"{m.group(1)}if (auditOn('ole')) {m.group(2)}"),
+        (re.compile(r"(\s)(inspectShapeEffects\(shape, typeNumber, audit, objectId\);)"),
+         lambda m: f"{m.group(1)}if (auditOn('effects')) {m.group(2)}"),
+        # the cards of the checks switched off are not shown
+        *(card(label, key) for key, label in CHECKS),
+        # a slice at a time; the page's own check stays for "no document" and the preview outside CorelDRAW
+        (re.compile(r"([ \t]*)function refreshAudit\(deepText\) \{(?=[\s\S]*?auditInProgress = true;"
+                    r"[\s\S]*?renderAudit\(scanDocument\(app, doc\), false\);)"),
+         lambda m: _indented(_IN_SLICES, m.group(1)) + m.group(1) + "function refreshAuditAtOnce(deepText) {"),
+        # no check when the docker opens, only by «Проверить сейчас»
+        (re.compile(r"(\r?\n)([ \t]*)(refreshTimer = setTimeout\(function \(\) \{\s*refreshAudit\(false\);\s*\}, 1200\);)"),
+         lambda m: (f"{m.group(1)}{m.group(2)}if (config.auditOnOpen === false) {{{m.group(1)}{m.group(2)}  try {{"
+                    f"{m.group(1)}{m.group(2)}    document.getElementById('auditPanel').style.display ="
+                    f" config.showDocumentAudit ? 'block' : 'none';"
+                    f"{m.group(1)}{m.group(2)}    setAuditStatus('Проверка — по кнопке «Проверить сейчас».', false);"
+                    f"{m.group(1)}{m.group(2)}  }} catch (e) {{}}"
+                    f"{m.group(1)}{m.group(2)}}} else {{{m.group(1)}{m.group(2)}  {m.group(3)}"
+                    f"{m.group(1)}{m.group(2)}}}")),
+    ]
+
+
+def lighter_check(html: str) -> str:
+    """The page's document check made lighter: the checks switched off in ``config.auditChecks`` are
+    skipped, ``config.auditOnOpen`` false — no check when the docker opens, and the check runs a slice
+    at a time.  Every change or none: a page written another way is left as it is."""
+    if _CHECK_HELPER in html:
+        return html
+    missing = [name for name in _CHECK_NEEDS if f"function {name}(" not in html]
+    if missing or "installedFontMap" not in html or "auditInProgress" not in html:
+        if "function scanDocument(" in html:
+            log.info("corel docker: the page's check lacks %s: its checks stay as they are", missing)
+        return html
+    patched = html
+    for pattern, replacement in _checks_patches():
+        patched, count = pattern.subn(replacement, patched, count=1)
+        if count != 1:
+            log.info("corel docker: the page's check is written another way (%s): its checks stay as they are",
+                     pattern.pattern[:40])
+            return html
+    if "\r\n" in html and not re.search(r"(?<!\r)\n", html):  # the page's own line ends for the lines added
+        patched = re.sub(r"(?<!\r)\n", "\r\n", patched)
+    return patched
+
+
+def can_switch_checks(html: str) -> bool:
+    return _CHECK_HELPER in lighter_check(html)

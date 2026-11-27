@@ -900,7 +900,7 @@ class SettingsWindow(ctk.CTkToplevel):
             self._button(upper, "↓", lambda: self.move_docker_preset(1), width=40),
             self._button(lower, "Группу выше", lambda: self.move_docker_group(-1), width=120),
             self._button(lower, "Группу ниже", lambda: self.move_docker_group(1), width=120),
-            self._button(lower, "Вид кнопок…", self.docker_look, width=120),
+            self._button(lower, "Вид и проверки…", self.docker_look, width=140),
         ]
         for index, button in enumerate(self.docker_buttons):
             button.pack(side="left", padx=(0 if index in (0, 5) else 4 if index == 4 else 8, 0))
@@ -1311,7 +1311,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self._change_docker(presets, presets[min(index, len(presets) - 1)].id if presets else None)
 
     def docker_look(self) -> None:
-        """How big the docker draws its buttons."""
+        """How big the docker draws its buttons, and its document check."""
         from . import coreldocker
         from .coreldocker_dialogs import LookDialog
 
@@ -1322,22 +1322,22 @@ class SettingsWindow(ctk.CTkToplevel):
         except coreldocker.DockerError as exc:
             messagebox.showerror("Switcher", str(exc), parent=self)
             return
-        LookDialog(self, self.put_docker_look, look, self.docker_presets, audit=options["audit"], live=options["live"])
+        LookDialog(self, self.put_docker_look, look, self.docker_presets, options)
 
-    def put_docker_look(self, look, audit: bool | None = None, live: bool | None = None) -> str | None:
-        """Write the buttons' size (and the heavy parts on or off) into the docker and its copies; an error
-        to show in the dialog, or None."""
+    def put_docker_look(self, look, options: dict | None = None) -> str | None:
+        """Write the buttons' size (and the document check as set up) into the docker and its copies; an
+        error to show in the dialog, or None."""
         from . import coreldocker
 
         if self.docker is None:
             return "Докер не найден."
         try:
             for docker in (self.docker, *self.docker_copies):
-                docker.save_look(look, audit, live)
+                docker.save_look(look, options)
         except coreldocker.DockerError as exc:
             return str(exc)
         selected = self.docker_tree.selection()
-        heavy = "" if audit is None else (" Проверка документа " + ("включена" if audit else "выключена") + ".")
+        heavy = "" if not options else " " + _check_said(options)
         self._show_docker(self.docker, select=selected[0] if selected else None,
                           note=f"Вид кнопок записан в докер: в ряду {look.columns}, высота {look.height}, надпись "
                                f"{look.font}.{heavy} В CorelDRAW он появится, когда панель докера закрыть и открыть "
@@ -2248,3 +2248,19 @@ def _is_windows() -> bool:
     import sys
 
     return sys.platform == "win32"
+
+
+def _check_said(options: dict) -> str:
+    """What the docker's document check is set to, in a sentence for the page's hint."""
+    from .coreldocker import CHECKS
+
+    if not options.get("audit"):
+        return "Проверка документа выключена."
+    checks = options.get("checks")
+    if checks is None:
+        return "Проверка документа включена."
+    chosen = [label for key, label in CHECKS if checks.get(key, True)]
+    said = "Проверка документа: " + (", ".join(chosen) if chosen else "ничего не отмечено")
+    if options.get("on_open") is False:
+        said += " — по кнопке «Проверить сейчас»"
+    return said + "."

@@ -989,6 +989,43 @@ def test_the_size_of_the_docker_buttons_is_chosen(window, docker_folder, monkeyp
     dialog.destroy()
 
 
+def test_the_checks_of_the_docker_are_ticked(window, docker_folder, monkeypatch, tmp_path):
+    """The user: «Надо ещё сделать добавление или убирание проверок галочками в настройках докера»."""
+    from switcher.coreldocker import Docker
+    from switcher.coreldocker_dialogs import LookDialog
+
+    monkeypatch.setenv("SWITCHER_HOME", str(tmp_path / "home"))
+    window.config_copy.corel_docker.folder = str(docker_folder)
+    window.show("docker")
+    ROOT.update()
+    window.docker_look()
+    ROOT.update()
+    dialog = [w for w in window.winfo_children() if isinstance(w, LookDialog)][-1]
+    assert set(dialog.checks) == {"spot", "rgb", "fonts", "ole", "effects"}
+    assert all(box.cget("state") == "normal" for box in dialog.parts)
+    dialog.checks["fonts"].set(False)
+    dialog.checks["effects"].set(False)
+    dialog.on_open.set(False)
+    dialog.live.set(False)
+    dialog.done()
+    options = Docker(docker_folder).options()
+    assert options == {"audit": True, "live": False, "on_open": False,
+                       "checks": {"spot": True, "rgb": True, "fonts": False, "ole": True, "effects": False}}
+    hint = window.docker_hint.cget("text")
+    assert "Проверка документа: PANTONE / Spot, RGB-объекты, OLE-объекты — по кнопке «Проверить сейчас»." in hint
+    window.docker_look()
+    ROOT.update()
+    dialog = [w for w in window.winfo_children() if isinstance(w, LookDialog)][-1]
+    assert dialog.checks["fonts"].get() is False and dialog.on_open.get() is False
+    dialog.audit.set(False)
+    dialog._audit_switched()
+    assert all(box.cget("state") == "disabled" for box in dialog.parts)  # nothing to choose with the check off
+    dialog.done()
+    options = Docker(docker_folder).options()
+    assert options["audit"] is False and options["checks"]["fonts"] is False  # kept for when it is back on
+    assert "Проверка документа выключена." in window.docker_hint.cget("text")
+
+
 def test_a_docker_in_two_corels_is_changed_in_both(window, docker_folder, monkeypatch, tmp_path):
     """The user's other computer: CorelDRAW 26 and 27. 0.8.2 remembered the copy in 26 and changed only it,
     while the user works in 27."""
@@ -1019,9 +1056,12 @@ def test_a_docker_in_two_corels_is_changed_in_both(window, docker_folder, monkey
     assert window.put_docker_preset(None, new) is None
     assert [p.title for p in Docker(in_27).load()] == [p.title for p in Docker(in_26).load()]
     assert len(Docker(in_27).load()) == 5
-    assert window.put_docker_look(Look(3, 50, 12), audit=False, live=False) is None
+    checks = {"spot": True, "rgb": False, "fonts": False, "ole": True, "effects": True}
+    assert window.put_docker_look(Look(3, 50, 12), {"audit": True, "live": False, "on_open": False,
+                                                    "checks": checks}) is None
     for folder in (in_26, in_27):
-        assert Docker(folder).look() == Look(3, 50, 12) and Docker(folder).options() == {"audit": False, "live": False}
+        assert Docker(folder).look() == Look(3, 50, 12)
+        assert Docker(folder).options() == {"audit": True, "live": False, "on_open": False, "checks": checks}
     window.undo_docker()
     for folder in (in_26, in_27):
-        assert Docker(folder).look() == Look(4, 24, 7) and Docker(folder).options() == {"audit": True, "live": True}
+        assert Docker(folder).look() == Look(4, 24, 7) and Docker(folder).options()["live"] is True

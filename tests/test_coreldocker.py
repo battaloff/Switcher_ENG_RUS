@@ -611,18 +611,164 @@ def test_the_page_asks_corel_its_version_once(docker):
     assert coreldocker.application_kept(page) == page
 
 
+ALL_CHECKS = {"spot": True, "rgb": True, "fonts": True, "ole": True, "effects": True}
+
+
 def test_the_document_check_can_be_switched_off(docker):
     from switcher.coreldocker import Look
 
-    assert docker.options() == {"audit": True, "live": True}
-    docker.save_look(Look(), audit=False, live=False)
-    assert docker.options() == {"audit": False, "live": False}
+    assert docker.options() == {"audit": True, "live": True, "on_open": True, "checks": ALL_CHECKS}
+    docker.save_look(Look(), {"audit": False, "live": False})
+    assert docker.options() == {"audit": False, "live": False, "on_open": True, "checks": ALL_CHECKS}
     config = find_config(docker.page.read_text(encoding="utf-8"))[0]
     assert (config["showDocumentAudit"], config["enableLiveUpdates"], config["showDocumentInfo"]) == (False, False, True)
     project = json.loads(docker.manifest.read_text(encoding="utf-8"))
     assert (project["ShowDocumentAudit"], project["EnableLiveUpdates"]) == (False, False)
     docker.save_look(Look(3, 50, 12))  # the switches left as they are
-    assert docker.options() == {"audit": False, "live": False} and docker.look() == Look(3, 50, 12)
+    assert docker.options()["audit"] is False and docker.look() == Look(3, 50, 12)
+
+
+def test_each_check_is_switched_on_and_off(docker):
+    """The user: «Надо ещё сделать добавление или убирание проверок галочками в настройках докера»."""
+    from switcher.coreldocker import Look
+
+    checks = dict(ALL_CHECKS, fonts=False, effects=False)
+    docker.save_look(Look(), {"audit": True, "live": False, "on_open": False, "checks": checks})
+    assert docker.options() == {"audit": True, "live": False, "on_open": False, "checks": checks}
+    config = find_config(docker.page.read_text(encoding="utf-8"))[0]
+    assert config["auditChecks"] == checks and config["auditOnOpen"] is False
+    project = json.loads(docker.manifest.read_text(encoding="utf-8"))
+    assert "AuditChecks" not in project and "AuditOnOpen" not in project  # Docker Studio has no such settings
+    docker.save_look(Look(), {"checks": {"fonts": True}})  # a check not named: on
+    assert docker.options()["checks"] == ALL_CHECKS and docker.options()["on_open"] is False
+    assert docker.undo() and docker.options()["checks"] == checks
+
+
+def test_the_check_of_the_page_is_made_lighter_once(docker):
+    page = docker.page.read_text(encoding="utf-8")
+    assert "function auditOn(" not in page  # as Docker Studio made it
+    docker.save(docker.load())
+    page = docker.page.read_text(encoding="utf-8")
+    assert page.count("function auditOn(") == 1 and page.count("function auditInSteps(") == 1
+    assert "function refreshAuditAtOnce(deepText)" in page and "config.auditOnOpen === false" in page
+    assert "if (auditOn('fonts')) summary += auditCard(" in page
+    assert "var fontMap = auditOn('fonts') ? installedFonts(app) : {};" in page
+    assert coreldocker.lighter_check(page) == page
+    docker.save(docker.load())
+    assert docker.page.read_text(encoding="utf-8") == page
+
+
+def test_a_check_written_another_way_is_left_as_it_is(docker_folder, tmp_path):
+    page = docker_folder / "Politext.html"
+    html = page.read_text(encoding="utf-8")
+    other = html.replace("inspectOle(audit, pageIndex, objectId);\n", "inspectOle(audit, objectId, pageIndex);\n")
+    assert other != html
+    assert coreldocker.lighter_check(other) == other  # all or nothing
+    page.write_text(other, encoding="utf-8")
+    docker = Docker(docker_folder, backups=tmp_path / "copies")
+    assert docker.options()["checks"] is None  # the settings do not offer the switches
+    docker.save(docker.load())
+    assert "function auditOn(" not in page.read_text(encoding="utf-8")
+    no_check = "<script>var config = {};\nfunction getApplication() { return null; }\n</script>"
+    assert coreldocker.lighter_check(no_check) == no_check
+
+
+NODE_HARNESS = r"""
+// The docker page's script in node, with the few parts of a browser it uses and a fake CorelDRAW
+// whose every object is slow to answer (as CorelDRAW 27).
+const fs = require('fs');
+const html = fs.readFileSync(process.argv[2], 'utf8');
+const scripts = [...html.matchAll(/<script type="text\/javascript">([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const nodes = {};
+const statuses = [];
+global.document = { getElementById(id) {
+  if (!nodes[id]) {
+    const node = { id, style: {}, innerHTML: '', className: '' };
+    let content = '';
+    Object.defineProperty(node, 'textContent', { get: () => content,
+      set: (value) => { content = value; if (id === 'auditStatus') statuses.push(value); } });
+    nodes[id] = node;
+  }
+  return nodes[id];
+} };
+const collection = (items) => ({ Count: items.length, Item(i) { return items[i - 1]; }, All() { return collection(items); } });
+const slow = () => { const until = performance.now() + 0.2; while (performance.now() < until) {} };
+let id = 0;
+const shape = (type, extra) => Object.assign({ get Type() { slow(); return type; }, StaticID: ++id,
+  Fill: { Type: 1, UniformColor: { Type: 2 } }, Outline: { Type: 0 }, Transparency: { Type: 0 } }, extra || {});
+const shapes = [];
+for (let i = 0; i < 400; i++) {
+  const k = i % 8;
+  if (k === 0) shapes.push(shape(3, { Fill: { Type: 1, UniformColor: { Type: 5 } } }));
+  else if (k === 1) shapes.push(shape(3, { Outline: { Type: 1, Color: { Type: 1, Name: 'PANTONE 186 C' } } }));
+  else if (k === 2) shapes.push(shape(6, { Text: { Story: { Font: i % 16 === 2 ? 'Missing Font' : 'Arial',
+    Fill: { Type: 1, UniformColor: { Type: 2 } }, Outline: { Type: 0 } } } }));
+  else if (k === 3) shapes.push(shape(7, { Shapes: collection([shape(3), shape(16), shape(12)]) }));
+  else if (k === 4) shapes.push(shape(12));
+  else if (k === 5) shapes.push(shape(3, { Transparency: { Type: 1 } }));
+  else shapes.push(shape(3));
+}
+const pages = [{ Shapes: collection(shapes) }, { Shapes: collection(shapes.slice(0, 10)) }];
+const app = { Documents: { Count: 1 }, ActiveDocument: { Pages: collection(pages) },
+  FontList: collection(['Arial', 'Times New Roman']) };
+global.window = { external: { Application: app, RegisterEventListener() {} } };
+for (const script of scripts) (0, eval)(script);  // as the page's own scripts: global
+window.onload();
+const started = Date.now();
+const timer = setInterval(() => {
+  const status = nodes.auditStatus ? nodes.auditStatus.textContent : '';
+  if (/^Проверено|^Проверка —|не закончена/.test(status) || Date.now() - started > 20000) {
+    clearInterval(timer);
+    const cards = [...(nodes.auditSummary ? nodes.auditSummary.innerHTML : '').matchAll(
+      /audit-value">([^<]*)<\/div><div class="audit-label">([^<]*)/g)].map(m => m[2] + '=' + m[1]);
+    const missing = /Нет в системе: (\d+)/.exec(nodes.auditSummary ? nodes.auditSummary.innerHTML : '');
+    console.log(JSON.stringify({ status, cards, missing: missing ? Number(missing[1]) : null, panel: nodes.auditPanel && nodes.auditPanel.style.display,
+      slices: statuses.filter(s => s.startsWith('Проверка…')).length }));
+  }
+}, 20);
+"""
+
+
+def run_page(tmp_path, html: str) -> dict:
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("no node to run the page's script")
+    (tmp_path / "harness.js").write_text(NODE_HARNESS, encoding="utf-8")
+    (tmp_path / "page.html").write_text(html, encoding="utf-8")
+    done = subprocess.run([node, str(tmp_path / "harness.js"), str(tmp_path / "page.html")], check=False,
+                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def with_config(html: str, **settings) -> str:
+    config, begin, end = find_config(html)
+    config.update(settings)
+    return html[:begin] + json.dumps(config, ensure_ascii=False) + html[end:]
+
+
+def test_the_lighter_check_finds_what_the_page_found(docker_folder, tmp_path):
+    """0.8.3: CorelDRAW 27 still hung while the docker checked the document. The check now runs a slice at
+    a time, skips what is switched off, and finds the same as before."""
+    html = (docker_folder / "Politext.html").read_text(encoding="utf-8")
+    before = run_page(tmp_path, html)
+    assert before["status"] == "Проверено: 512 объектов." and before["slices"] == 0  # in one go
+    assert before["cards"] == ["PANTONE / Spot=1", "OLE-объекты=102", "Шрифты=2", "RGB-объекты=52",
+                               "Эффекты=102"]
+    assert before["missing"] == 1
+    lighter = coreldocker.lighter_check(html)
+    after = run_page(tmp_path, lighter)
+    assert (after["status"], after["cards"], after["missing"]) == (before["status"], before["cards"], 1)
+    assert after["slices"] >= 2  # CorelDRAW had its window back in between
+    some = run_page(tmp_path, with_config(lighter, auditChecks=dict(ALL_CHECKS, fonts=False, ole=False)))
+    assert some["cards"] == ["PANTONE / Spot=1", "RGB-объекты=52", "Эффекты=102"]
+    assert some["status"] == before["status"]
+    later = run_page(tmp_path, with_config(lighter, auditOnOpen=False))
+    assert later["status"] == "Проверка — по кнопке «Проверить сейчас»." and later["cards"] == []
+    assert later["panel"] == "block"  # so the button can be pressed
 
 
 def test_copies_in_several_corels_are_found_and_made_the_same(tmp_path, docker_folder):

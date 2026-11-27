@@ -156,12 +156,18 @@ CorelDRAW (`corel_targets`: …\Programs64\CorelDRW.exe) as a docker of its own 
 «POLITEXT 2» when one is taken, no VBA (a .gms project name would clash), Windows' Zone.Identifier
 mark removed (with it the docker shows empty), `switcher-install.json` so a reinstall updates in
 place; `win_access.make_writable` creates the folders in Program Files with one UAC question.
-«Вид кнопок…» (`Look`: buttons in a row, height, caption size) adds one `<style id="switcher-look">`
-before `</head>` that overrides the page's `.preset` rule; its switches turn off the page's document check
-(`showDocumentAudit`) and refreshing it on every CorelDRAW event (`enableLiveUpdates`) — in CorelDRAW 27
-on the user's other PC the docker hung Corel for 1–2 minutes on opening/closing and on edits, while their
-myScripts docker (only `GMSManager.RunMacro` from the page) did not. Every write also patches the page
-(`improved`): `getApplication`/`getCorelMajor` remember their answer (the page asked twice per button).
+«Вид и проверки…» (`Look`: buttons in a row, height, caption size) adds one `<style id="switcher-look">`
+before `</head>` that overrides the page's `.preset` rule; its switches (`Docker.options`) turn off the page's
+document check (`showDocumentAudit`), refreshing it on every CorelDRAW event (`enableLiveUpdates`), checking
+when the docker opens (`auditOnOpen`) and each check (`auditChecks`: spot, rgb, fonts, ole, effects) — in
+CorelDRAW 27 on the user's other PC the check hung Corel for 1–2 minutes (each call into Corel is slow there,
+the check makes ~16–20 per object), while their myScripts docker (only `GMSManager.RunMacro`) did not. Every
+write also patches the page (`improved`): `getApplication`/`getCorelMajor` remember their answer (the page
+asked twice per button), and `lighter_check` — all or nothing, else the page is left and the dialog shows no
+per-check switches — makes the check skip what is switched off and run a slice at a time (`auditInSteps`:
+40 ms of work, then `setTimeout`, so Corel gets its window back; the page's own `refreshAudit` stays as
+`refreshAuditAtOnce` for the preview and "no document"). `test_the_lighter_check_finds_what_the_page_found`
+runs the cut-down check of `conftest.DOCKER_AUDIT` in node before and after the patch.
 A docker installed into several CorelDRAWs (same GUIDs in `switcher-install.json`) is one docker: the page
 writes every change into all copies (`copies_of`), and copies that differ are made the same as the one
 changed last when the page opens (0.8.2 changed only the first, CorelDRAW 26, while the user worked in 27). CorelDRAW is not on

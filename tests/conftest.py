@@ -33,6 +33,279 @@ def profile():
 
 # -- a CorelDRAW docker as «Corel Docker Studio» makes it (see switcher/coreldocker.py) ---------------
 
+# The document check of a Docker Studio page, cut down: the same functions and the lines Switcher changes
+# (coreldocker.lighter_check), as the page on the user's computers has them.
+DOCKER_AUDIT = """
+                    function setAuditStatus(message, isError) {
+                  var node = document.getElementById('auditStatus');
+                  text(node, message || '');
+                  node.className = isError ? 'status error' : 'status';
+                }
+
+                function emptyAudit() {
+                  return { pages: 0, objects: 0, textObjects: 0, fallbackId: 0, spotColors: {}, oleObjects: [],
+                    fonts: {}, rgbObjectIds: {}, effects: {}, effectObjectIds: {} };
+                }
+
+                function dictionaryValues(dictionary) {
+                  var values = [];
+                  for (var key in dictionary) {
+                    if (dictionary.hasOwnProperty(key)) values.push(dictionary[key]);
+                  }
+                  return values;
+                }
+
+                function collectionItem(collection, index) {
+                  try { return collection.Item(index); }
+                  catch (firstError) { return collection(index); }
+                }
+
+                function shapeId(shape, pageIndex, audit) {
+                  try { return pageIndex + ':' + String(shape.StaticID); }
+                  catch (e) {
+                    audit.fallbackId++;
+                    return pageIndex + ':fallback:' + audit.fallbackId;
+                  }
+                }
+
+                function inspectColor(color, audit, objectId) {
+                  if (!color) return;
+                  var typeNumber;
+                  try { typeNumber = parseInt(color.Type, 10); }
+                  catch (e) { return; }
+
+                  if (typeNumber === 5) {
+                    audit.rgbObjectIds[objectId] = true;
+                  }
+
+                  if (typeNumber !== 1 && typeNumber !== 14 &&
+                      typeNumber !== 22 && typeNumber !== 25 &&
+                      typeNumber !== 26) return;
+
+                  var name = String(color.Name || 'PANTONE');
+                  var key = name.toLowerCase();
+                  if (!audit.spotColors[key]) {
+                    audit.spotColors[key] = { name: name, pantone: typeNumber === 1, ids: {} };
+                  }
+                  audit.spotColors[key].ids[objectId] = true;
+                }
+
+                function inspectFill(fill, audit, objectId) {
+                  if (!fill) return;
+                  var fillType;
+                  try { fillType = parseInt(fill.Type, 10); }
+                  catch (e) { return; }
+                  if (fillType === 1) {
+                    try { inspectColor(fill.UniformColor, audit, objectId); } catch (uniformError) {}
+                  }
+                }
+
+                function inspectOutline(outline, audit, objectId) {
+                  try {
+                    if (outline && parseInt(outline.Type, 10) !== 0) {
+                      inspectColor(outline.Color, audit, objectId);
+                    }
+                  } catch (e) {}
+                }
+
+                function addEffect(audit, name, objectId) {
+                  var key = String(name).toLowerCase();
+                  if (!audit.effects[key]) audit.effects[key] = { name: name, ids: {} };
+                  audit.effects[key].ids[objectId] = true;
+                  audit.effectObjectIds[objectId] = true;
+                }
+
+                function inspectShapeEffects(shape, typeNumber, audit, objectId) {
+                  if (typeNumber === 16) addEffect(audit, 'Тень', objectId);
+                  var safeGraphicShape = typeNumber >= 1 && typeNumber <= 6;
+                  if (!safeGraphicShape) return;
+                  try {
+                    if (parseInt(shape.Transparency.Type, 10) !== 0) {
+                      addEffect(audit, 'Прозрачность', objectId);
+                    }
+                  } catch (transparencyError) {}
+                }
+
+                function addFont(audit, name, objectId) {
+                  name = String(name || '');
+                  if (!name) return;
+                  var key = name.toLowerCase();
+                  if (!audit.fonts[key]) audit.fonts[key] = { name: name, ids: {} };
+                  audit.fonts[key].ids[objectId] = true;
+                }
+
+                function inspectTextShape(shape, audit, objectId) {
+                  var story;
+                  try { story = shape.Text.Story; }
+                  catch (e) { return; }
+
+                  audit.textObjects++;
+                  var font = '';
+                  try { font = String(story.Font || ''); } catch (fontError) {}
+                  addFont(audit, font, objectId);
+                  try {
+                    inspectFill(story.Fill, audit, objectId);
+                  } catch (storyFillError) {}
+                  try {
+                    inspectOutline(story.Outline, audit, objectId);
+                  } catch (storyOutlineError) {}
+                }
+
+                function inspectOle(audit, pageIndex, objectId) {
+                  audit.oleObjects.push({ page: pageIndex, id: objectId, program: 'OLE / штрихкод' });
+                }
+
+                function scanShapeCollection(collection, audit, pageIndex, seen) {
+                  if (!collection) return;
+                  var count = 0;
+                  try { count = parseInt(collection.Count, 10) || 0; }
+                  catch (e) { return; }
+
+                  for (var i = 1; i <= count; i++) {
+                    var shape;
+                    try { shape = collectionItem(collection, i); }
+                    catch (itemError) { continue; }
+
+                    var objectId = shapeId(shape, pageIndex, audit);
+                    if (seen[objectId]) continue;
+                    seen[objectId] = true;
+
+                    var typeNumber = -1;
+                    try { typeNumber = parseInt(shape.Type, 10); }
+                    catch (typeError) {}
+                    if (typeNumber !== 7) audit.objects++;
+                    inspectShapeEffects(shape, typeNumber, audit, objectId);
+                    if (typeNumber === 6) {
+                      inspectTextShape(shape, audit, objectId);
+                    }
+                    if (typeNumber === 12) {
+                      inspectOle(audit, pageIndex, objectId);
+                      continue;
+                    }
+
+                    var safeGraphicShape =
+                      typeNumber >= 1 && typeNumber <= 6;
+                    if (safeGraphicShape) {
+                      try {
+                        inspectFill(shape.Fill, audit, objectId);
+                      } catch (fillError) {}
+                      try {
+                        inspectOutline(shape.Outline, audit, objectId);
+                      } catch (outlineError) {}
+                    }
+
+                    if (typeNumber === 7) {
+                      try {
+                        scanShapeCollection(
+                          shape.Shapes.All(), audit, pageIndex, seen);
+                      } catch (groupError) {}
+                    }
+                  }
+                }
+
+                function installedFonts(app) {
+                  if (installedFontMap) return installedFontMap;
+                  var result = {};
+                  try {
+                    var list = app.FontList;
+                    for (var i = 1; i <= list.Count; i++) {
+                      var name = String(collectionItem(list, i) || '');
+                      if (name) result[name.toLowerCase()] = true;
+                    }
+                    installedFontMap = result;
+                  } catch (e) {}
+                  return result;
+                }
+
+                function scanDocument(app, doc) {
+                  var audit = emptyAudit();
+                  var seen = {};
+                  audit.pages = parseInt(doc.Pages.Count, 10) || 0;
+                  for (var pageIndex = 1; pageIndex <= audit.pages; pageIndex++) {
+                    try {
+                      var page = doc.Pages.Item(pageIndex);
+                      scanShapeCollection(
+                        page.Shapes.All(), audit, pageIndex, seen);
+                    } catch (pageError) {}
+                  }
+
+                  var fontMap = installedFonts(app);
+                  var fonts = dictionaryValues(audit.fonts);
+                  for (var i = 0; i < fonts.length; i++) {
+                    fonts[i].missing = !fontMap[fonts[i].name.toLowerCase()];
+                  }
+                  return audit;
+                }
+
+                function auditCard(label, value, note, state) {
+                  return '<div class="audit-card ' + state + '"><div class="audit-value">' + value +
+                    '</div><div class="audit-label">' + label + '</div><div class="audit-note">' + note +
+                    '</div></div>';
+                }
+
+                function renderAudit(audit, preview) {
+                  var spots = dictionaryValues(audit.spotColors);
+                  var fonts = dictionaryValues(audit.fonts);
+                  var missingCount = 0;
+                  for (var j = 0; j < fonts.length; j++) {
+                    if (fonts[j].missing) missingCount++;
+                  }
+                  var rgbCount = dictionaryValues(audit.rgbObjectIds).length;
+                  var effectCount = dictionaryValues(audit.effectObjectIds).length;
+
+                  var summary = '';
+                  summary += auditCard(
+                    'PANTONE / Spot', String(spots.length), '', spots.length ? 'notice' : 'ok');
+                  summary += auditCard(
+                    'OLE-объекты', String(audit.oleObjects.length), '', audit.oleObjects.length ? 'warning' : 'ok');
+                  summary += auditCard(
+                    'Шрифты', String(fonts.length), 'Нет в системе: ' + missingCount, missingCount ? 'warning' : 'ok');
+                  summary += auditCard(
+                    'RGB-объекты', String(rgbCount), '', rgbCount ? 'warning' : 'ok');
+                  summary += auditCard(
+                    'Эффекты', String(effectCount), '', effectCount ? 'warning' : 'ok');
+                  document.getElementById('auditSummary').innerHTML = summary;
+                  setAuditStatus(
+                    preview
+                      ? 'Пример панели.'
+                      : 'Проверено: ' + audit.objects + ' объектов.',
+                    false);
+                }
+
+                function refreshAudit(deepText) {
+                  var panel = document.getElementById('auditPanel');
+                  panel.style.display = config.showDocumentAudit ? 'block' : 'none';
+                  if (!config.showDocumentAudit || auditInProgress) return;
+
+                  var app = getApplication();
+                  if (!app) {
+                    renderAudit(emptyAudit(), true);
+                    return;
+                  }
+
+                  auditInProgress = true;
+                  try {
+                    var doc = requireDocument(app);
+                    renderAudit(scanDocument(app, doc), false);
+                  } catch (e) {
+                    document.getElementById('auditSummary').innerHTML = '';
+                    setAuditStatus(String(e.message || e.description || 'Нет открытого документа'), false);
+                  } finally {
+                    auditInProgress = false;
+                  }
+                }
+
+    function startUp() {
+      refreshTimer = setTimeout(function () {
+        refreshAudit(false);
+      }, 1200);
+      if (config.enableLiveUpdates) {
+        try { window.external.RegisterEventListener('SelectionChange', 'refreshAudit(false)'); } catch (e) {}
+      }
+    }
+
+    window.onload = startUp;
+"""
 DOCKER_PAGE = """<!DOCTYPE html>
 <html>
 <head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><title>POLITEXT</title>
@@ -57,9 +330,31 @@ DOCKER_PAGE = """<!DOCTYPE html>
     </div>
   </div>
   <div id="presets"></div>
+  <div id="auditPanel" class="panel" style="display:none;">
+    <div class="panel-title">Проверка документа <span class="counter" id="auditCounter"></span></div>
+    <button class="quick" type="button" onclick="refreshAudit(true)">Проверить сейчас</button>
+    <span id="auditScope" class="audit-scope">Все страницы</span>
+    <div id="auditSummary" class="audit-summary"></div>
+    <div id="auditDetails"></div>
+    <div id="auditStatus" class="status"></div>
+  </div>
   <script type="text/javascript">
     var config = %s;
     var registeredEvents = [];
+    var refreshTimer = null;
+    var auditInProgress = false;
+    var installedFontMap = null;
+
+    function text(node, value) {
+      node.textContent = value;
+    }
+
+    function requireDocument(app) {
+      if (!app || !app.Documents || app.Documents.Count < 1 || !app.ActiveDocument) {
+        throw new Error('Сначала откройте документ CorelDRAW.');
+      }
+      return app.ActiveDocument;
+    }
 
     function getApplication() {
       try {
@@ -89,10 +384,11 @@ DOCKER_PAGE = """<!DOCTYPE html>
         } catch (guideError) {}
       }
     }
+%AUDIT%
   </script>
 </body>
 </html>
-"""
+""".replace("%AUDIT%", DOCKER_AUDIT)
 DOCKER_MACROS = """Attribute VB_Name = "Macros"
 Option Explicit
 
